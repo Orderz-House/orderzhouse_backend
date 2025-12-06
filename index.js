@@ -18,18 +18,16 @@ startDeadlineWatcher();
 
 // delete permanently after 30 days
 cron.schedule("*/1 * * * *", async () => {
-console.log("Running cleanupDeactivatedUsers cron job...");
+  console.log("Running cleanupDeactivatedUsers cron job...");
   await cleanupDeactivatedUsers();
 });
-
-
 
 // Routers
 import CoursesRouter from "./router/course.js";
 import assignmentsRouter from "./router/assignments.js";
 import VerificationRouter from "./router/verification.js";
 import paymentsRouter from "./router/payments.js";
-import AdminUser from "./router/adminUser.js"
+import AdminUser from "./router/adminUser.js";
 import tasksRouter from "./router/tasks.js";
 import usersRouter from "./router/user.js";
 import plansRouter from "./router/plans.js";
@@ -40,54 +38,48 @@ import notificationsRouter from "./router/notifications.js";
 import authRouter from "./router/auth.js";
 import offersRouter from "./router/offers.js";
 import ratingsRouter from "./router/rating.js";
-import Blogsrouter from "./router/blogs.js"
+import Blogsrouter from "./router/blogs.js";
 import freelancerCategoriesRouter from "./router/freelancerCategories.js";
 import subscriptionsRouter from "./router/subscription.js";
-//import analyticsRoutes from "./router/analytics.js";
 import emailVerificationRoutes from "./router/emailVerification.js";
 import chatsRouter from "./router/chats.js";
-
-
-// DB connection
-dotenv.config();
 
 const app = express();
 const PORT = process.env.NODE_ENV === "test" ? 0 : process.env.PORT || 5000;
 
 if (process.env.NODE_ENV !== "test") {
   app.set("trust proxy", 1);
-  
 }
 
 app.use(express.json());
-app.use(cors({
- origin: ["https://orderzhouse.com ,http://localhost:5173", "http://localhost:5174"],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
 
-// Rate limiter (optional)
-/*
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: "try again later",
-});
-app.use(limiter);
-*/
+app.use(
+  cors({
+    origin: [
+      "https://orderzhouse.com",
+      "http://localhost:5173",
+      "http://localhost:5174"
+    ],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  })
+);
 
+// Preflight for all routes
+app.options("*", cors());
+
+// -----------------------
 // Routers
-//APPOINTMENTS
+// -----------------------
 app.use("/assignments", assignmentsRouter);
 app.use("/verification", VerificationRouter);
 app.use("/freelancerCategories", freelancerCategoriesRouter);
-app.use("/blogs", Blogsrouter)
-app.use("/admUser" , AdminUser)
-app.use("/category" , categoriesRouter);
+app.use("/blogs", Blogsrouter);
+app.use("/admUser", AdminUser);
+app.use("/category", categoriesRouter);
 app.use("/tasks", tasksRouter);
 app.use("/offers", offersRouter);
-//app.use("/analytics", analyticsRoutes);
 app.use("/projects", projectsRouter);
 app.use("/users", usersRouter);
 app.use("/plans", plansRouter);

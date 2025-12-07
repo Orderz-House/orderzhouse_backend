@@ -82,8 +82,6 @@ categoryRouter.delete(
 // --------------------
 // SUB-SUB-CATEGORIES
 // --------------------
-categoryRouter.get("/:categoryId/sub-sub-categories", getSubSubCategoriesByCategoryId);
-
 categoryRouter.post(
   "/sub-category/:subCategoryId/sub-sub-categories",
   authentication,

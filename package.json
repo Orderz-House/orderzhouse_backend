@@ -12,12 +12,6 @@
   "author": "",
   "license": "ISC",
   "type": "module",
-
-  "engines": {
-    "node": "20.x",
-    "npm": "9.x"
-  },
-
   "dependencies": {
     "@adminjs/express": "^6.1.1",
     "@adminjs/sql": "^2.2.6",
@@ -52,7 +46,6 @@
     "victory": "^37.3.6",
     "ws": "^8.18.3"
   },
-
   "devDependencies": {
     "@babel/core": "^7.28.4",
     "@babel/node": "^7.28.0",

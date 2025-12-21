@@ -80,7 +80,7 @@ This Express.js application provides RESTful APIs and real-time communication fo
    npm run dev
    ```
 
-The server will start on `http://localhost:5000` (or the port specified in your `.env` file).
+The server will start on `https://orderzhouse-backend.onrender.com` (or the port specified in your `.env` file).
 
 ### Available Scripts
 

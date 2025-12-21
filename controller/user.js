@@ -1,7 +1,8 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { LogCreators, ACTION_TYPES } from "../services/loggingService.js";
-import { NotificationCreators } from "../services/notificationService.js";
+import { NotificationCreators } from "../services/notificationService.js"; // تركته زي ما هو
+import eventBus from "../events/eventBus.js"; // ✅ ADDED
 import nodemailer from "nodemailer";
 import pool from "../models/db.js";
 import cloudinary from "../cloudinary/setupfile.js";
@@ -103,8 +104,10 @@ const register = async (req, res) => {
     phone_number,
     country,
     username,
-    categories = [],
-    sub_sub_categories = [],
+    category_id, // New field for main category
+    sub_category_ids = [], // New field for sub-categories
+    categories = [], // Old field (for backward compatibility)
+    sub_sub_categories = [], // Old field (for backward compatibility)
   } = req.body;
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -171,8 +174,56 @@ const register = async (req, res) => {
     );
     const user = rows[0];
 
-    // ربط الكاتيجوري/sub_sub للفريلانسر
+    // ربط الكاتيجوري/sub_sub للفريلانسر باستخدام الهيكل الجديد
     if (parseInt(role_id, 10) === 3) {
+      // استخدام الهيكل الجديد إذا كان متاحاً
+      if (category_id) {
+        // ربط الفريلانسر بالكاتيجوري الرئيسية
+        await pool.query(
+          `INSERT INTO freelancer_categories (freelancer_id, category_id)
+           VALUES ($1, $2)
+           ON CONFLICT (freelancer_id, category_id) DO NOTHING`,
+          [user.id, category_id]
+        );
+      }
+
+      // ربط الفريلانسر بـ sub-categories
+      if (Array.isArray(sub_category_ids) && sub_category_ids.length > 0) {
+        // التحقق من أن عدد sub-categories لا يتجاوز 3
+        if (sub_category_ids.length > 3) {
+          return res.status(400).json({
+            success: false,
+            message: "You can select a maximum of 3 sub-categories"
+          });
+        }
+
+        // التحقق من أن جميع sub-categories تنتمي إلى نفس category_id
+        if (category_id) {
+          const { rows: validSubCategories } = await pool.query(
+            `SELECT id FROM sub_categories WHERE id = ANY($1) AND category_id = $2`,
+            [sub_category_ids, category_id]
+          );
+          
+          if (validSubCategories.length !== sub_category_ids.length) {
+            return res.status(400).json({
+              success: false,
+              message: "Some sub-categories do not belong to the selected main category"
+            });
+          }
+        }
+
+        // إدخال sub-categories المحددة
+        for (const subCatId of sub_category_ids) {
+          await pool.query(
+            `INSERT INTO freelancer_sub_categories (freelancer_id, sub_category_id)
+             VALUES ($1, $2)
+             ON CONFLICT (freelancer_id, sub_category_id) DO NOTHING`,
+            [user.id, subCatId]
+          );
+        }
+      }
+
+      // للتوافق مع الهيكل القديم (إذا كان لا يزال مستخدماً)
       if (Array.isArray(categories) && categories.length > 0) {
         for (const catId of categories) {
           await pool.query(
@@ -361,7 +412,7 @@ const login = async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (validPassword) {
-      // لو الأكاونت كان معطَّل ضمن فترة السماح → رجعه Active
+      // لو الأكاونت كان معطَّل ضمن فترة السماح → رجعه Active
       if (user.is_deleted && user.deactivated_at) {
         await pool.query(
           `
@@ -739,14 +790,19 @@ const rateFreelancer = async (req, res) => {
     );
 
     try {
-      await NotificationCreators.reviewSubmitted(
-        null,
-        userId,
-        reviewerName || "A client"
-      );
+      // ✅ EVENT BUS بدل NotificationCreators
+      eventBus.emit("rating.submitted", {
+        ratingId: null,
+        projectId: projectId || null,
+        freelancerId: userId,
+        clientId: req.token?.userId || null,
+        clientName: reviewerName || "A client",
+        rating,
+        comment: null,
+      });
     } catch (notificationError) {
       console.error(
-        `Failed to create rating notification for freelancer ${userId}:`,
+        `Failed to emit rating.submitted event for freelancer ${userId}:`,
         notificationError
       );
     }
@@ -782,9 +838,17 @@ const getUserdata = async (req, res) => {
          username,
          role_id,
          profile_pic_url,
+         phone_number,
+         country,
+         bio,
+         rating,
+         rating_sum,
+         rating_count,
          is_deleted,
          is_two_factor_enabled,
-         email_verified
+         email_verified,
+         created_at,
+         updated_at
        FROM users 
        WHERE id = $1`,
       [userId]

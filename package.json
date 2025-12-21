@@ -16,6 +16,7 @@
     "@adminjs/express": "^6.1.1",
     "@adminjs/sql": "^2.2.6",
     "@google-cloud/storage": "^7.17.1",
+    "@stripe/stripe-js": "^8.5.3",
     "adminjs": "^7.6.1",
     "axios": "^1.12.2",
     "bcrypt": "^6.0.0",
@@ -42,6 +43,7 @@
     "sequelize": "^6.37.7",
     "socket.io": "^4.8.1",
     "speakeasy": "^2.0.0",
+    "stripe": "^20.0.0",
     "twilio": "^5.10.4",
     "victory": "^37.3.6",
     "ws": "^8.18.3"

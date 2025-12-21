@@ -1,5 +1,6 @@
 import pool from "../models/db.js";
 import bcrypt from "bcrypt";
+import eventBus from "../events/eventBus.js";
 
 /**
  * Get users by role (admin only)
@@ -133,7 +134,6 @@ export const getUsersByRole = async (req, res) => {
   }
 };
 
-
 export const getUserById = async (req, res) => {
   const { id } = req.params;
   const requesterId = req.token?.userId;
@@ -183,7 +183,7 @@ export const createUser = async (req, res) => {
     `;
 
     const result = await pool.query(query, [
-      role_id || 3, 
+      role_id || 3,
       first_name,
       last_name,
       email,
@@ -192,6 +192,14 @@ export const createUser = async (req, res) => {
       country,
       username,
     ]);
+
+    // 🔔 إشعار فقط إذا الأدمن أنشأ مستخدم
+    if (req.token?.role === 1) {
+      eventBus.emit("system.announcement", {
+        userId: result.rows[0].id,
+        message: "Your account has been created by an admin.",
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -210,9 +218,8 @@ export const createUser = async (req, res) => {
   }
 };
 
-
 /**
- * Update user info 
+ * Update user info
  */
 export const updateUser = async (req, res) => {
   const { id } = req.params;
@@ -233,12 +240,13 @@ export const updateUser = async (req, res) => {
   ];
 
   try {
-    const { rows: existingRows } = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+    const { rows: existingRows } = await pool.query(
+      "SELECT * FROM users WHERE id = $1",
+      [id]
+    );
     if (existingRows.length === 0) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
-
-    const existingUser = existingRows[0];
 
     const updates = [];
     const values = [];
@@ -259,25 +267,33 @@ export const updateUser = async (req, res) => {
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ success: false, message: "No fields provided to update" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No fields provided to update" });
     }
 
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
 
-    const query = `UPDATE users SET ${updates.join(", ")} WHERE id = $${idx} RETURNING *`;
+    const query = `UPDATE users SET ${updates.join(
+      ", "
+    )} WHERE id = $${idx} RETURNING *`;
     values.push(id);
 
     const { rows } = await pool.query(query, values);
 
-    return res.status(200).json({ success: true, data: rows[0] });
+    res.status(200).json({ success: true, data: rows[0] });
   } catch (error) {
     if (error.code === "23505") {
-      return res.status(400).json({ success: false, message: "Email, phone number, or username already exists" });
+      return res.status(400).json({
+        success: false,
+        message: "Email, phone number, or username already exists",
+      });
     }
     console.error(error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
 /**
  * Soft delete user
  */
@@ -300,6 +316,14 @@ export const deleteUser = async (req, res) => {
 
     if (!result.rows.length)
       return res.status(404).json({ success: false, message: "User not found" });
+
+    // 🔔 إشعار إذا الأدمن حذف مستخدم
+    if (requesterRole === 1 && parseInt(id) !== requesterId) {
+      eventBus.emit("system.announcement", {
+        userId: result.rows[0].id,
+        message: "Your account has been deactivated by the admin.",
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -334,6 +358,11 @@ export const verifyFreelancer = async (req, res) => {
         success: false,
         message: "Freelancer not found or not eligible",
       });
+
+    // 🔔 إشعار توثيق الفريلانسر
+    eventBus.emit("freelancer.verified", {
+      freelancerId: result.rows[0].id,
+    });
 
     res.status(200).json({
       success: true,

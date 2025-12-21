@@ -1,6 +1,7 @@
 import pool from "../models/db.js";
 import { v2 as cloudinary } from 'cloudinary';
-import express from "express";
+import eventBus from "../events/eventBus.js"; 
+
 // ===== CLOUDINARY SETUP =====
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -213,6 +214,12 @@ export const createBlog = async (req, res) => {
       [userId, fullname, title, description, attachmentsData, category, tags, read_time]
     );
 
+    eventBus.emit("blog.created", {
+      blogId: rows[0].id,
+      authorId: userId,
+      title,
+    });
+
     const transformed = transformBlog(rows[0]);
     res.status(201).json({
       success: true,
@@ -371,6 +378,10 @@ export const approveBlog = async (req, res) => {
 
     await pool.query(`UPDATE blogs SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
 
+    eventBus.emit("blog.approved", {
+      blogId: id,
+    });
+
     res.json({ success: true, message: "Blog approved successfully" });
   } catch (error) {
     console.error("Error approving blog:", error);
@@ -391,6 +402,10 @@ export const rejectBlog = async (req, res) => {
     }
 
     await pool.query(`UPDATE blogs SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+
+    eventBus.emit("blog.rejected", {
+      blogId: id,
+    });
 
     res.json({ success: true, message: "Blog rejected successfully" });
   } catch (error) {

@@ -1,7 +1,7 @@
 import pool from "../../models/db.js";
 
 /**
- * based on project_type and status logic
+ * Shared filter based on type/status
  */
 const buildStatusCondition = () => {
   return `
@@ -18,7 +18,7 @@ const buildStatusCondition = () => {
    =================================================== */
 
 /**
- *  Get projects by main category (requires token)
+ * Get projects by main category
  */
 export const getProjectsByCategory = async (req, res) => {
   const { category_id } = req.params;
@@ -41,8 +41,7 @@ export const getProjectsByCategory = async (req, res) => {
       LEFT JOIN sub_sub_categories ssc ON p.sub_sub_category_id = ssc.id
       LEFT JOIN users u ON u.id = p.user_id
       WHERE p.category_id = $1
-        AND p.status = 'active' OR p.status = 'bidding'
-        AND p.is_deleted = false
+      ${buildStatusCondition()}
       ORDER BY p.created_at DESC
       `,
       [category_id]
@@ -52,7 +51,10 @@ export const getProjectsByCategory = async (req, res) => {
       success: true,
       projects: rows,
       userId,
-      note: rows.length === 0 ? "No available projects in this category." : undefined,
+      note:
+        rows.length === 0
+          ? "No available projects in this category."
+          : undefined,
     });
   } catch (error) {
     console.error("Error fetching projects by category:", error);
@@ -61,7 +63,7 @@ export const getProjectsByCategory = async (req, res) => {
 };
 
 /**
- * Get projects by sub-category (requires token)
+ * Get projects by sub-category
  */
 export const getProjectsBySubCategory = async (req, res) => {
   const { sub_category_id } = req.params;
@@ -84,8 +86,7 @@ export const getProjectsBySubCategory = async (req, res) => {
       LEFT JOIN sub_sub_categories ssc ON p.sub_sub_category_id = ssc.id
       LEFT JOIN users u ON u.id = p.user_id
       WHERE p.sub_category_id = $1
-        AND p.status = 'active' OR p.status = 'bidding'
-        AND p.is_deleted = false
+      ${buildStatusCondition()}
       ORDER BY p.created_at DESC
       `,
       [sub_category_id]
@@ -95,7 +96,10 @@ export const getProjectsBySubCategory = async (req, res) => {
       success: true,
       projects: rows,
       userId,
-      note: rows.length === 0 ? "No available projects in this sub-category." : undefined,
+      note:
+        rows.length === 0
+          ? "No available projects in this sub-category."
+          : undefined,
     });
   } catch (error) {
     console.error("Error fetching projects by sub-category:", error);
@@ -103,9 +107,9 @@ export const getProjectsBySubCategory = async (req, res) => {
   }
 };
 
-/* ==============================================
-   Get projects by sub-sub-category (requires token)
-   ============================================== */
+/**
+ * Get projects by sub-sub-category
+ */
 export const getProjectsBySubSubCategory = async (req, res) => {
   const { sub_sub_category_id } = req.params;
   const userId = req.token?.userId;
@@ -127,8 +131,7 @@ export const getProjectsBySubSubCategory = async (req, res) => {
       JOIN categories c ON sc.category_id = c.id
       LEFT JOIN users u ON u.id = p.user_id
       WHERE p.sub_sub_category_id = $1
-        AND p.status = 'active' OR p.status = 'bidding'
-        AND p.is_deleted = false
+      ${buildStatusCondition()}
       ORDER BY p.created_at DESC
       `,
       [sub_sub_category_id]
@@ -138,7 +141,10 @@ export const getProjectsBySubSubCategory = async (req, res) => {
       success: true,
       projects: rows,
       userId,
-      note: rows.length === 0 ? "No available projects in this sub-sub-category." : undefined,
+      note:
+        rows.length === 0
+          ? "No available projects in this sub-sub-category."
+          : undefined,
     });
   } catch (error) {
     console.error("Error fetching projects by sub-sub-category:", error);
@@ -147,7 +153,7 @@ export const getProjectsBySubSubCategory = async (req, res) => {
 };
 
 /* ===================================================
-   🌍 PUBLIC ROUTES 
+   PUBLIC ROUTES (NO AUTH)
    =================================================== */
 
 export const getPublicCategories = async (req, res) => {
@@ -165,15 +171,14 @@ export const getPublicCategories = async (req, res) => {
   }
 };
 
-/**
- *  Get projects by main category (public)
- */
 export const getProjectsByCategoryId = async (req, res) => {
   try {
     const { categoryId } = req.params;
 
     if (!categoryId || isNaN(categoryId)) {
-      return res.status(400).json({ success: false, message: "Invalid category ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid category ID" });
     }
 
     const result = await pool.query(
@@ -209,7 +214,9 @@ export const getProjectsBySubCategoryId = async (req, res) => {
     const { subCategoryId } = req.params;
 
     if (!subCategoryId || isNaN(subCategoryId)) {
-      return res.status(400).json({ success: false, message: "Invalid subcategory ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid subcategory ID" });
     }
 
     const result = await pool.query(
@@ -247,7 +254,9 @@ export const getProjectsBySubSubCategoryId = async (req, res) => {
     const { subSubCategoryId } = req.params;
 
     if (!subSubCategoryId || isNaN(subSubCategoryId)) {
-      return res.status(400).json({ success: false, message: "Invalid sub-subcategory ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid sub-subcategory ID" });
     }
 
     const { rows } = await pool.query(
@@ -282,17 +291,18 @@ export const getProjectsBySubSubCategoryId = async (req, res) => {
   }
 };
 
-/**
- * -------------------------------
- * GET PROJECT BY ID
- * -------------------------------
- */
+/* ===================================================
+   PROJECT DETAILS / BY USER ROLE / FILES
+   =================================================== */
+
 export const getProjectById = async (req, res) => {
   try {
     const { projectId } = req.params;
 
     if (!projectId) {
-      return res.status(400).json({ success: false, message: "projectId is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "projectId is required" });
     }
 
     const { rows: projectRows } = await pool.query(
@@ -322,7 +332,9 @@ export const getProjectById = async (req, res) => {
     );
 
     if (!projectRows.length) {
-      return res.status(404).json({ success: false, message: "Project not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Project not found" });
     }
 
     const project = projectRows[0];
@@ -333,17 +345,6 @@ export const getProjectById = async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
-
-
-
-/**
- * =========================================================
- * Get Projects by Authenticated User Role
- * =========================================================
- * - If client (role_id = 2): get own created projects
- * - If freelancer (role_id = 3): get assigned projects
- * =========================================================
- */
 
 export const getProjectsByUserRole = async (req, res) => {
   try {
@@ -357,13 +358,12 @@ export const getProjectsByUserRole = async (req, res) => {
       });
     }
 
-    // 🔹 Query parameters for filtering/sorting/search
     const { q, status, created_at } = req.query;
 
     let roleLabel = "";
     let query = "";
     const params = [userId];
-    let idx = 2; 
+    let idx = 2;
 
     if (roleId === 2) {
       roleLabel = "client";
@@ -400,8 +400,9 @@ export const getProjectsByUserRole = async (req, res) => {
         LEFT JOIN categories c ON p.category_id = c.id
         LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
         LEFT JOIN sub_sub_categories ssc ON p.sub_sub_category_id = ssc.id
-        WHERE pa.freelancer_id = $1
-          AND p.is_deleted = false
+         WHERE pa.freelancer_id = $1
+      AND p.is_deleted = false
+      AND pa.status = 'active'
       `;
     } else {
       return res
@@ -409,21 +410,18 @@ export const getProjectsByUserRole = async (req, res) => {
         .json({ success: false, message: "Role not allowed" });
     }
 
-    // 🔹 Apply search (title / description)
     if (q && q.trim()) {
       query += ` AND (p.title ILIKE $${idx} OR p.description ILIKE $${idx})`;
       params.push(`%${q.trim()}%`);
       idx++;
     }
 
-    // 🔹 Apply status filter
     if (status && status.trim()) {
       query += ` AND p.status = $${idx}`;
       params.push(status.trim());
       idx++;
     }
 
-    // 🔹 Sorting by date (default DESC)
     const sortDirection =
       created_at && created_at.toLowerCase() === "asc" ? "ASC" : "DESC";
     query += ` ORDER BY p.created_at ${sortDirection}`;
@@ -451,13 +449,6 @@ export const getProjectsByUserRole = async (req, res) => {
   }
 };
 
-/**
- * ================================
- *  Get Project Files by Project ID
- * ================================
- * @route   GET /project-files/:projectId
- * @access  Authenticated (client, freelancer, or admin)
- */
 export const getProjectFilesByProjectId = async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -490,7 +481,6 @@ export const getProjectFilesByProjectId = async (req, res) => {
       [projectId]
     );
 
-    // حتى لو ما فيش ملفات، نرجّع 200 مع قائمة فاضية بدل 404
     if (rows.length === 0) {
       return res.status(200).json({
         success: true,

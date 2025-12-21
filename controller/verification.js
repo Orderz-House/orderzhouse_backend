@@ -1,4 +1,5 @@
 import pool from "../models/db.js";
+import eventBus from "../events/eventBus.js"; 
 
 /* =========================================
    GET PENDING VERIFICATIONS
@@ -61,6 +62,15 @@ export const approveVerification = async (req, res) => {
       [id]
     );
 
+    try {
+      eventBus.emit("freelancer.verificationApproved", {
+        freelancerId: id,
+        adminId: req.token?.userId || null,
+      });
+    } catch (e) {
+      console.error("eventBus error freelancer.verificationApproved:", e);
+    }
+
     res.json({ success: true, message: "Freelancer approved" });
   } catch (err) {
     console.error("Error approving verification:", err);
@@ -81,6 +91,15 @@ export const rejectVerification = async (req, res) => {
        WHERE id = $1`,
       [id]
     );
+
+    try {
+      eventBus.emit("freelancer.verificationRejected", {
+        freelancerId: id,
+        adminId: req.token?.userId || null,
+      });
+    } catch (e) {
+      console.error("eventBus error freelancer.verificationRejected:", e);
+    }
 
     res.json({ success: true, message: "Freelancer rejected" });
   } catch (err) {

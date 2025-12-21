@@ -26,14 +26,10 @@ notificationsRouter.get("/count", getCount);
 notificationsRouter.put("/read-all", markAllAsRead);
 
 // 🧹 Clean up old notifications (admin only)
-notificationsRouter.delete(
-  "/cleanup",
-  authorization(["admin"]),
-  cleanupNotifications
-);
+notificationsRouter.delete("/cleanup", authorization(["admin"]), cleanupNotifications);
 
-// Create a test notification
-notificationsRouter.post("/test", createTestNotification);
+// ✅ Test notification (admin only)
+notificationsRouter.post("/test", authorization(["admin"]), createTestNotification);
 
 // Mark a specific notification as read
 notificationsRouter.put("/:id/read", markAsRead);

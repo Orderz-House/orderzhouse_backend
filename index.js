@@ -4,12 +4,14 @@ import cors from "cors";
 import http from "http";
 import dotenv from "dotenv";
 import cron from "node-cron";
+import "./services/notificationListeners.js";
 
 // Cron jobs
 import "./cron/expireSubscriptions.js";
 import "./cron/autoExpireOldOffers.js";
 import { startDeadlineWatcher } from "./cron/realTimeDeadlineWatcher.js";
 import { cleanupDeactivatedUsers } from "./cron/cleanupDeactivatedUsers.js";
+import liveScreenRoutes from "./router/LiveScreen.js";
 
 dotenv.config();
 
@@ -17,7 +19,7 @@ dotenv.config();
 startDeadlineWatcher();
 
 // delete permanently after 30 days
-cron.schedule("*/1 * * * *", async () => {
+cron.schedule("*/20 * * * *", async () => {
 console.log("Running cleanupDeactivatedUsers cron job...");
   await cleanupDeactivatedUsers();
 });
@@ -29,7 +31,7 @@ import SubscriptionRouter from "./router/subscription.js";
 import CoursesRouter from "./router/course.js";
 import assignmentsRouter from "./router/assignments.js";
 import VerificationRouter from "./router/verification.js";
-import paymentsRouter from "./router/payments.js";
+import paymentsRoutes from "./router/payments.js";
 import AdminUser from "./router/adminUser.js"
 import tasksRouter from "./router/tasks.js";
 import usersRouter from "./router/user.js";
@@ -43,10 +45,12 @@ import offersRouter from "./router/offers.js";
 import ratingsRouter from "./router/rating.js";
 import Blogsrouter from "./router/blogs.js"
 import freelancerCategoriesRouter from "./router/freelancerCategories.js";
-import subscriptionsRouter from "./router/subscription.js";
+import subscriptionsRoutes from "./router/subscription.js";
 //import analyticsRoutes from "./router/analytics.js";
 import emailVerificationRoutes from "./router/emailVerification.js";
 import chatsRouter from "./router/chats.js";
+import StripeRouter from "./router/Stripe/stripe.js";
+import webhookRouter from "./router/Stripe/stripeWebhook.js";
 
 
 // DB connection
@@ -60,6 +64,9 @@ if (process.env.NODE_ENV !== "test") {
   
 }
 
+//stripe webhook needs the raw body
+app.use("/stripe", webhookRouter);
+
 app.use(express.json());
 
 app.use(cors({
@@ -72,6 +79,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+
 
 
 // Rate limiter (optional)
@@ -100,14 +109,16 @@ app.use("/users", usersRouter);
 app.use("/plans", plansRouter);
 app.use("/logs", logsRouter);
 app.use("/courses", CoursesRouter);
-app.use("/subscriptions", SubscriptionRouter);
+app.use("/subscriptions", subscriptionsRoutes);
 app.use("/chats", chatsRouter);
 app.use("/notifications", notificationsRouter);
 app.use("/auth", authRouter);
 app.use("/ratings", ratingsRouter);
 app.use("/email", emailVerificationRoutes);
-app.use("/payments", paymentsRouter);
+app.use("/payments", paymentsRoutes);
 app.use("/chat", chatsRouter);
+app.use("/api", liveScreenRoutes);
+app.use("/stripe", StripeRouter);
 
 let server, io;
 

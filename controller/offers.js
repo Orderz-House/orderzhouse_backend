@@ -1,5 +1,6 @@
 import pool from "../models/db.js";
-import { NotificationCreators } from "../services/notificationService.js";
+import eventBus from "../events/eventBus.js";
+import { NotificationCreators } from "../services/notificationService.js"; // تركتها زي ما هي (حتى لو ما عاد تُستخدم)
 
 /**
  * -------------------------------
@@ -45,8 +46,7 @@ export const sendOffer = async (req, res) => {
     if (!freelancerId)
       return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    if (!projectId || bid_amount == null)
-{
+    if (!projectId || bid_amount == null) {
       return res
         .status(400)
         .json({ success: false, message: "Missing required fields" });
@@ -105,15 +105,19 @@ export const sendOffer = async (req, res) => {
 
     const newOffer = insertQuery.rows[0];
 
+    // ✅ EVENT BUS: offer submitted
     try {
-      await NotificationCreators.offerSubmitted(
-        newOffer.id,
+      eventBus.emit("offer.submitted", {
+        offerId: newOffer.id,
         projectId,
-        project.title,
-        freelancerName
-      );
+        projectTitle: project.title,
+        clientId: project.user_id,
+        freelancerId,
+        freelancerName,
+        bidAmount: bid_amount,
+      });
     } catch (e) {
-      console.error("Notification error on offer submission:", e);
+      console.error("eventBus error on offer.submitted:", e);
     }
 
     res.status(201).json({
@@ -164,17 +168,24 @@ export const approveOrRejectOffer = async (req, res) => {
     await client.query("BEGIN");
 
     if (action === "reject") {
-      await client.query(`UPDATE offers SET offer_status = 'rejected' WHERE id = $1`, [offerId]);
+      await client.query(
+        `UPDATE offers SET offer_status = 'rejected' WHERE id = $1`,
+        [offerId]
+      );
+
+      // ✅ EVENT BUS: offer rejected (single)
       try {
-        await NotificationCreators.offerStatusChanged(
-          offer.id,
-          offer.project_title,
-          offer.freelancer_id,
-          false
-        );
+        eventBus.emit("offer.statusChanged", {
+          offerId: offer.id,
+          projectId: offer.project_id,
+          projectTitle: offer.project_title,
+          freelancerId: offer.freelancer_id,
+          accepted: false,
+        });
       } catch (e) {
-        console.error(e);
+        console.error("eventBus error offer.statusChanged(reject):", e);
       }
+
       await client.query("COMMIT");
       return res.json({ success: true, message: "Offer rejected" });
     }
@@ -209,8 +220,20 @@ export const approveOrRejectOffer = async (req, res) => {
         });
       }
 
-      // ✅ Accept the offer
-      await client.query(`UPDATE offers SET offer_status = 'accepted' WHERE id = $1`, [offerId]);
+      // ✅ (THIS IS THE "بس" اللي قصدته): fetch other pending offers BEFORE rejecting them
+      const { rows: otherPendingOffers } = await client.query(
+        `SELECT id, freelancer_id
+         FROM offers
+         WHERE project_id = $1
+           AND id <> $2
+           AND offer_status = 'pending'`,
+        [offer.project_id, offerId]
+      );
+
+      await client.query(
+        `UPDATE offers SET offer_status = 'accepted' WHERE id = $1`,
+        [offerId]
+      );
 
       // ✅ Mark all other offers for this project as "rejected"
       await client.query(
@@ -222,7 +245,6 @@ export const approveOrRejectOffer = async (req, res) => {
         [offer.project_id, offerId]
       );
 
-      // ✅ Create project assignment (simple insert, let DB handle duplicates)
       try {
         await client.query(
           `INSERT INTO project_assignments (project_id, freelancer_id, status, assigned_at)
@@ -238,10 +260,10 @@ export const approveOrRejectOffer = async (req, res) => {
             [offer.project_id, offer.freelancer_id]
           );
         } else {
-          throw assignErr; // re-throw if it's a different error
+          throw assignErr;
         }
       }
-      // ✅ Create/update escrow record (simple insert)
+
       try {
         await client.query(
           `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status) 
@@ -257,38 +279,50 @@ export const approveOrRejectOffer = async (req, res) => {
             [offer.project_id, offer.client_id, offer.freelancer_id, offer.bid_amount]
           );
         } else {
-          throw escrowErr; // re-throw if it's a different error
+          throw escrowErr;
         }
       }
 
-      // ✅ Send notifications (optional, don't fail if notification service is unavailable)
       try {
-        if (NotificationCreators && typeof NotificationCreators.offerStatusChanged === 'function') {
-          await NotificationCreators.offerStatusChanged(
-            offer.id,
-            offer.project_title,
-            offer.freelancer_id,
-            true
-          );
-        }
-        if (NotificationCreators && typeof NotificationCreators.freelancerAssignmentChanged === 'function') {
-          await NotificationCreators.freelancerAssignmentChanged(
-            offer.project_id,
-            offer.project_title,
-            offer.freelancer_id,
-            true
-          );
-        }
-        if (NotificationCreators && typeof NotificationCreators.escrowFunded === 'function') {
-          await NotificationCreators.escrowFunded(
-            offer.project_id,
-            offer.project_title,
-            offer.freelancer_id,
-            offer.bid_amount
-          );
+        // accepted offer
+        eventBus.emit("offer.statusChanged", {
+          offerId: offer.id,
+          projectId: offer.project_id,
+          projectTitle: offer.project_title,
+          freelancerId: offer.freelancer_id,
+          accepted: true,
+        });
+
+        // assignment changed
+        eventBus.emit("freelancer.assignmentChanged", {
+          projectId: offer.project_id,
+          projectTitle: offer.project_title,
+          freelancerId: offer.freelancer_id,
+          assigned: true,
+        });
+
+        // escrow funded/held
+        eventBus.emit("escrow.funded", {
+          projectId: offer.project_id,
+          projectTitle: offer.project_title,
+          freelancerId: offer.freelancer_id,
+          amount: offer.bid_amount,
+        });
+
+        if (Array.isArray(otherPendingOffers) && otherPendingOffers.length > 0) {
+          for (const o of otherPendingOffers) {
+            eventBus.emit("offer.statusChanged", {
+              offerId: o.id,
+              projectId: offer.project_id,
+              projectTitle: offer.project_title,
+              freelancerId: o.freelancer_id,
+              accepted: false,
+              autoRejected: true,
+            });
+          }
         }
       } catch (e) {
-        console.error("Notification error (non-critical):", e);
+        console.error("eventBus error (non-critical):", e);
       }
 
       await client.query("COMMIT");
@@ -388,7 +422,6 @@ export const getOffersForProject = async (req, res) => {
         .status(400)
         .json({ success: false, message: "Missing projectId" });
 
-    // ✅ تأكيد أن المشروع مملوك لهذا العميل
     const proj = await pool.query(
       `SELECT id, user_id, title 
        FROM projects 
@@ -407,7 +440,6 @@ export const getOffersForProject = async (req, res) => {
         message: "Not authorized to view offers for this project",
       });
 
-    // ✅ Query with freelancer statistics - simplified to check column names
     const q = `
       SELECT 
         o.*,
@@ -443,6 +475,7 @@ export const getOffersForProject = async (req, res) => {
 export const cancelOffer = async (req, res) => {
   try {
     const freelancerId = req.token?.userId;
+    const freelancerName = req.token?.username || "Freelancer";
     const { offerId } = req.params;
 
     const { rows } = await pool.query(
@@ -464,6 +497,26 @@ export const cancelOffer = async (req, res) => {
       [offerId]
     );
 
+    try {
+      const { rows: proj } = await pool.query(
+        `SELECT user_id, title FROM projects WHERE id = $1`,
+        [offer.project_id]
+      );
+      const projectTitle = proj?.[0]?.title || null;
+      const clientId = proj?.[0]?.user_id || null;
+
+      eventBus.emit("offer.withdrawn", {
+        offerId,
+        projectId: offer.project_id,
+        projectTitle,
+        freelancerId,
+        freelancerName,
+        clientId,
+      });
+    } catch (e) {
+      console.error("eventBus error offer.withdrawn:", e);
+    }
+
     res.json({ success: true, message: "Offer withdrawn successfully" });
   } catch (err) {
     console.error("cancelOffer error:", err);
@@ -484,10 +537,31 @@ export const autoExpireOldOffers = async () => {
            created_at <= NOW() - INTERVAL '7 days'
            OR project_id IN (SELECT id FROM projects WHERE status != 'bidding')
          )
-       RETURNING id`
+       RETURNING id, freelancer_id, project_id`
     );
-    if (rows.length > 0)
+
+    if (rows.length > 0) {
       console.log(`Auto-expired ${rows.length} old offers`);
+
+      for (const r of rows) {
+        try {
+          const { rows: p } = await pool.query(
+            `SELECT title FROM projects WHERE id = $1`,
+            [r.project_id]
+          );
+          const title = p?.[0]?.title || null;
+
+          eventBus.emit("offer.expired", {
+            offerId: r.id,
+            projectId: r.project_id,
+            projectTitle: title,
+            freelancerId: r.freelancer_id,
+          });
+        } catch (e) {
+          console.error("eventBus error offer.expired:", e);
+        }
+      }
+    }
   } catch (err) {
     console.error("autoExpireOldOffers error:", err);
   }

@@ -14,10 +14,14 @@ import { LogCreators, ACTION_TYPES } from "../services/loggingService.js";
 export const getNotifications = async (req, res) => {
   try {
     const userId = req.token?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
     const { limit = 50, offset = 0, unreadOnly = false } = req.query;
 
-    const parsedLimit = Math.min(parseInt(limit) || 50, 100);
-    const parsedOffset = Math.max(parseInt(offset) || 0, 0);
+    const parsedLimit = Math.min(parseInt(limit, 10) || 50, 100);
+    const parsedOffset = Math.max(parseInt(offset, 10) || 0, 0);
     const parsedUnreadOnly = unreadOnly === "true";
 
     const notifications = await getUserNotifications(
@@ -27,15 +31,20 @@ export const getNotifications = async (req, res) => {
       parsedUnreadOnly
     );
 
-    await LogCreators.projectOperation(
-      userId,
-      ACTION_TYPES.USER_READ,
-      null,
-      true,
-      { action: "get_notifications", count: notifications.length }
-    );
+    // لا نخلي اللوج يكسر الريسبونس
+    try {
+      await LogCreators.projectOperation(
+        userId,
+        ACTION_TYPES.USER_READ,
+        null,
+        true,
+        { action: "get_notifications", count: notifications.length }
+      );
+    } catch (e) {
+      console.error("Log error:", e);
+    }
 
-    res.json({
+    return res.json({
       success: true,
       notifications,
       pagination: {
@@ -47,15 +56,17 @@ export const getNotifications = async (req, res) => {
   } catch (error) {
     console.error("Error getting notifications:", error);
 
-    await LogCreators.projectOperation(
-      req.token?.userId,
-      ACTION_TYPES.USER_READ,
-      null,
-      false,
-      { action: "get_notifications", error: error.message }
-    );
+    try {
+      await LogCreators.projectOperation(
+        req.token?.userId,
+        ACTION_TYPES.USER_READ,
+        null,
+        false,
+        { action: "get_notifications", error: error.message }
+      );
+    } catch {}
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to get notifications",
     });
@@ -66,16 +77,21 @@ export const getNotifications = async (req, res) => {
 export const markAsRead = async (req, res) => {
   try {
     const userId = req.token?.userId;
-    const { id } = req.params;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
 
-    if (!id || isNaN(parseInt(id))) {
+    const { id } = req.params;
+    const nid = parseInt(id, 10);
+
+    if (!nid) {
       return res.status(400).json({
         success: false,
         message: "Invalid notification ID",
       });
     }
 
-    const success = await markNotificationAsRead(parseInt(id), userId);
+    const success = await markNotificationAsRead(nid, userId);
     if (!success) {
       return res.status(404).json({
         success: false,
@@ -83,18 +99,22 @@ export const markAsRead = async (req, res) => {
       });
     }
 
-    await LogCreators.projectOperation(
-      userId,
-      ACTION_TYPES.USER_UPDATE,
-      null,
-      true,
-      { action: "mark_notification_read", notificationId: id }
-    );
+    try {
+      await LogCreators.projectOperation(
+        userId,
+        ACTION_TYPES.USER_UPDATE,
+        null,
+        true,
+        { action: "mark_notification_read", notificationId: nid }
+      );
+    } catch {}
 
-    res.json({ success: true, message: "Notification marked as read" });
+    return res.json({ success: true, message: "Notification marked as read" });
   } catch (error) {
     console.error("Error marking notification as read:", error);
-    res.status(500).json({ success: false, message: "Failed to mark notification as read" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to mark notification as read" });
   }
 };
 
@@ -102,23 +122,31 @@ export const markAsRead = async (req, res) => {
 export const markAllAsRead = async (req, res) => {
   try {
     const userId = req.token?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
     const updatedCount = await markAllNotificationsAsRead(userId);
 
-    await LogCreators.projectOperation(
-      userId,
-      ACTION_TYPES.USER_UPDATE,
-      null,
-      true,
-      { action: "mark_all_notifications_read", count: updatedCount }
-    );
+    try {
+      await LogCreators.projectOperation(
+        userId,
+        ACTION_TYPES.USER_UPDATE,
+        null,
+        true,
+        { action: "mark_all_notifications_read", count: updatedCount }
+      );
+    } catch {}
 
-    res.json({
+    return res.json({
       success: true,
       message: `Marked ${updatedCount} notifications as read`,
     });
   } catch (error) {
     console.error("Error marking all notifications as read:", error);
-    res.status(500).json({ success: false, message: "Failed to mark notifications as read" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to mark notifications as read" });
   }
 };
 
@@ -126,22 +154,32 @@ export const markAllAsRead = async (req, res) => {
 export const getCount = async (req, res) => {
   try {
     const userId = req.token?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
     const { unreadOnly = false } = req.query;
     const parsedUnreadOnly = unreadOnly === "true";
 
     const count = await getNotificationCount(userId, parsedUnreadOnly);
 
-    res.json({ success: true, count, unreadOnly: parsedUnreadOnly });
+    return res.json({ success: true, count, unreadOnly: parsedUnreadOnly });
   } catch (error) {
     console.error("Error getting notification count:", error);
-    res.status(500).json({ success: false, message: "Failed to get notification count" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to get notification count" });
   }
 };
 
-/** POST /notifications/test */
+/** POST /notifications/test (admin only via router middleware) */
 export const createTestNotification = async (req, res) => {
   try {
     const userId = req.token?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
     const { message = "Test notification" } = req.body;
 
     const notification = await createNotification(
@@ -152,38 +190,33 @@ export const createTestNotification = async (req, res) => {
       "test"
     );
 
-    res.json({
+    return res.json({
       success: true,
       message: "Test notification created",
       notification,
     });
   } catch (error) {
     console.error("Error creating test notification:", error);
-    res.status(500).json({ success: false, message: "Failed to create test notification" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to create test notification" });
   }
 };
 
-/** DELETE /notifications/cleanup */
+/** DELETE /notifications/cleanup (admin only via router middleware) */
 export const cleanupNotifications = async (req, res) => {
   try {
     const userId = req.token?.userId;
-    const { daysOld = 90 } = req.query;
-
-    const { rows } = await pool.query(
-      `SELECT role_id FROM users WHERE id = $1 AND is_deleted = false`,
-      [userId]
-    );
-    if (!rows.length || rows[0].role_id !== 1) {
-      return res.status(403).json({
-        success: false,
-        message: "Admin access required",
-      });
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const parsedDaysOld = Math.max(parseInt(daysOld) || 90, 30);
+    const { daysOld = 90 } = req.query;
+    const parsedDaysOld = Math.max(parseInt(daysOld, 10) || 90, 30);
+
     const rowCount = await cleanupOldNotifications(parsedDaysOld);
 
-    res.json({
+    return res.json({
       success: true,
       message: `Cleaned up ${rowCount} old notifications`,
       deletedCount: rowCount,
@@ -191,7 +224,9 @@ export const cleanupNotifications = async (req, res) => {
     });
   } catch (error) {
     console.error("Error cleaning up notifications:", error);
-    res.status(500).json({ success: false, message: "Failed to cleanup notifications" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to cleanup notifications" });
   }
 };
 
@@ -199,9 +234,14 @@ export const cleanupNotifications = async (req, res) => {
 export const deleteNotification = async (req, res) => {
   try {
     const userId = req.token?.userId;
-    const { id } = req.params;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
 
-    if (!id || isNaN(parseInt(id))) {
+    const { id } = req.params;
+    const nid = parseInt(id, 10);
+
+    if (!nid) {
       return res.status(400).json({
         success: false,
         message: "Invalid notification ID",
@@ -209,8 +249,10 @@ export const deleteNotification = async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id`,
-      [parseInt(id), userId]
+      `DELETE FROM notifications
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [nid, userId]
     );
 
     if (!rows.length) {
@@ -220,10 +262,12 @@ export const deleteNotification = async (req, res) => {
       });
     }
 
-    res.json({ success: true, message: "Notification deleted successfully" });
+    return res.json({ success: true, message: "Notification deleted successfully" });
   } catch (error) {
     console.error("Error deleting notification:", error);
-    res.status(500).json({ success: false, message: "Failed to delete notification" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to delete notification" });
   }
 };
 

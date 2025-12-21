@@ -1,5 +1,5 @@
 import pool from "../models/db.js";
-import { NotificationCreators } from "../services/notificationService.js";
+import eventBus from "../events/eventBus.js"; 
 
 export const submitRating = async (req, res) => {
   
@@ -92,13 +92,17 @@ export const submitRating = async (req, res) => {
         ? clientInfo.rows[0].username
         : "A client";
 
-      await NotificationCreators.reviewSubmitted(
-        newRating.id,
-        freelancer_id,
-        clientName
-      );
+      eventBus.emit("rating.submitted", {
+        ratingId: newRating.id,
+        projectId: project_id,
+        freelancerId: freelancer_id,
+        clientId: client_id,
+        clientName,
+        rating,
+        comment: comment || null,
+      });
     } catch (e) {
-      console.error("Failed to send review notification:", e);
+      console.error("Failed to emit rating event:", e);
     }
 
     await client.query("COMMIT");

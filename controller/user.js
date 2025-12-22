@@ -246,13 +246,14 @@ const register = async (req, res) => {
 
     /* =========================
        CREATE USER
+       🔕 EMAIL VERIFICATION DISABLED
     ========================= */
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const userResult = await client.query(
       `INSERT INTO users
         (role_id, first_name, last_name, email, password, phone_number, country, username, email_verified)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,FALSE)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE) -- email_verified forced TRUE (OTP disabled)
        RETURNING id, email, first_name`,
       [
         roleId,
@@ -274,43 +275,40 @@ const register = async (req, res) => {
     if (roleId === 3) {
       await client.query(
         `INSERT INTO freelancer_categories (freelancer_id, category_id)
-         VALUES ($1, $2)`,
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
         [user.id, category_id]
       );
 
       for (const subCatId of sub_category_ids) {
         await client.query(
           `INSERT INTO freelancer_sub_categories (freelancer_id, sub_category_id)
-           VALUES ($1, $2)`,
+           VALUES ($1, $2)
+           ON CONFLICT DO NOTHING`,
           [user.id, subCatId]
         );
       }
     }
 
     /* =========================
-       EMAIL OTP
+       EMAIL OTP (DISABLED)
     ========================= */
-    const otp = generateOtp();
-    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
-
-    await client.query(
-      `UPDATE users
-       SET email_otp = $1, email_otp_expires = $2
-       WHERE id = $3`,
-      [otp, otpExpiry, user.id]
-    );
-
-    await transporter.sendMail({
-      from: `"OrderzHouse" <${process.env.EMAIL_FROM}>`,
-      to: user.email,
-      subject: "Verify your email",
-      html: `
-        <h2>Hello ${user.first_name}</h2>
-        <p>Your verification code:</p>
-        <h1>${otp}</h1>
-        <p>Expires in 5 minutes</p>
-      `,
-    });
+    // const otp = generateOtp();
+    // const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+    //
+    // await client.query(
+    //   `UPDATE users
+    //    SET email_otp = $1, email_otp_expires = $2
+    //    WHERE id = $3`,
+    //   [otp, otpExpiry, user.id]
+    // );
+    //
+    // await transporter.sendMail({
+    //   from: `"OrderzHouse" <${process.env.EMAIL_FROM}>`,
+    //   to: user.email,
+    //   subject: "Verify your email",
+    //   html: `<h1>${otp}</h1>`,
+    // });
 
     /* =========================
        COMMIT
@@ -319,7 +317,7 @@ const register = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Registered successfully. OTP sent ✅",
+      message: "Registered successfully",
       user_id: user.id,
     });
 
@@ -333,61 +331,6 @@ const register = async (req, res) => {
     });
   } finally {
     client.release();
-  }
-};
-/* ======================================================
-   VERIFY EMAIL OTP
-====================================================== */
-const verifyEmailOtp = async (req, res) => {
-  const { email, otp } = req.body;
-
-  if (!email || !otp) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Email and OTP are required" });
-  }
-
-  try {
-    const { rows } = await pool.query(
-      "SELECT id, email_otp, email_otp_expires FROM users WHERE email = $1",
-      [email.toLowerCase()]
-    );
-
-    if (rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    const user = rows[0];
-
-    if (user.email_otp !== otp) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid OTP" });
-    }
-
-    if (new Date() > new Date(user.email_otp_expires)) {
-      return res.status(400).json({
-        success: false,
-        message: "OTP expired",
-      });
-    }
-
-    await pool.query(
-      "UPDATE users SET email_verified = TRUE, email_otp = NULL, email_otp_expires = NULL WHERE id = $1",
-      [user.id]
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Email verified successfully ✅",
-    });
-  } catch (err) {
-    console.error("Verify Email OTP Error:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Server error" });
   }
 };
 
@@ -1149,7 +1092,7 @@ export {
   verifyPassword,
   updatePassword,
   deactivateAccount,
-  verifyEmailOtp,
+  // verifyEmailOtp,
   uploadProfilePic,
   sendOtpController,
   getUserdata,

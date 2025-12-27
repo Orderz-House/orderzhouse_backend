@@ -1,9 +1,9 @@
 import pool from "../../models/db.js";
 import { LogCreators, ACTION_TYPES } from "../../services/loggingService.js";
-import { NotificationCreators } from "../../services/notificationService.js";
 import cloudinary from "../../cloudinary/setupfile.js";
 import { Readable } from "stream";
 import multer from "multer";
+import eventBus from "../../events/eventBus.js";
 
 // Multer memory storage
 const storage = multer.memoryStorage();
@@ -156,13 +156,13 @@ export const createProject = async (req, res) => {
       sub_sub_category_id,
       title.trim(),
       description.trim(),
-      normalizedBudget,        
+      normalizedBudget,
       durationDaysValue,
       durationHoursValue,
       project_type,
-      normalizedBudgetMin,    
-      normalizedBudgetMax,     
-      normalizedHourlyRate,    
+      normalizedBudgetMin,
+      normalizedBudgetMax,
+      normalizedHourlyRate,
       preferred_skills || [],
       projectStatus,
     ]);
@@ -193,15 +193,19 @@ export const createProject = async (req, res) => {
       { title: project.title, category_id: project.category_id }
     );
 
+    // ✅ only notify freelancers when project is ACTIVE
+    // (bidding projects will be notified on adminApproveProject)
     try {
-      await NotificationCreators.projectCreated(
-        project.id,
-        project.title,
-        userId,
-        project.category_id
-      );
+      if (String(project.status) === "active") {
+        eventBus.emit("project.created", {
+          projectId: project.id,
+          projectTitle: project.title,
+          clientId: userId,
+          categoryId: project.category_id,
+        });
+      }
     } catch (err) {
-      console.error("Error creating project notifications:", err);
+      console.error("Error emitting project.created:", err);
     }
 
     return res.status(201).json({ success: true, project });
@@ -258,6 +262,18 @@ export const adminApproveProject = async (req, res) => {
     "UPDATE projects SET status = 'active' WHERE id = $1",
     [project.id]
   );
+
+  // ✅ when bidding project becomes active => notify freelancers now
+  try {
+    eventBus.emit("project.created", {
+      projectId: project.id,
+      projectTitle: project.title,
+      clientId: project.user_id,
+      categoryId: project.category_id,
+    });
+  } catch (err) {
+    console.error("Error emitting project.created on approve:", err);
+  }
 
   res.json({ success: true });
 };
@@ -367,16 +383,15 @@ export const assignFreelancer = async (req, res) => {
       }
     );
 
+    // ✅ emit event (listener will create notifications)
     try {
-      if (NotificationCreators?.freelancerAssignmentChanged) {
-        await NotificationCreators.freelancerAssignmentChanged(
-          projectId,
-          freelancer_id,
-          true
-        );
-      }
+      eventBus.emit("freelancer.assignmentChanged", {
+        projectId,
+        freelancerId: freelancer_id,
+        assigned: true,
+      });
     } catch (err) {
-      console.error("Notification error:", err);
+      console.error("Notification emit error:", err);
     }
 
     return res.status(201).json({
@@ -474,15 +489,16 @@ export const applyForProject = async (req, res) => {
       { freelancer_id: freelancerId, assignment_id: assignment.id, assignment_type: "by_freelancer" }
     );
 
+    // ✅ emit event (listener will notify client)
     try {
-      await NotificationCreators.freelancerAppliedForProject(
-        project.user_id,
+      eventBus.emit("freelancer.appliedForProject", {
+        clientId: project.user_id,
         freelancerId,
         projectId,
-        project.title
-      );
+        projectTitle: project.title,
+      });
     } catch (notifErr) {
-      console.error("Notification error:", notifErr);
+      console.error("Notification emit error:", notifErr);
     }
 
     return res.status(201).json({
@@ -534,16 +550,19 @@ export const approveOrRejectApplication = async (req, res) => {
         [assignmentId]
       );
       await client.query("COMMIT");
+
+      // ✅ emit event
       try {
-        await NotificationCreators.freelancerApplicationStatusChanged(
-          assignment.project_id,
-          assignment.freelancer_id,
-          assignment.project_title,
-          false
-        );
+        eventBus.emit("freelancer.applicationStatusChanged", {
+          projectId: assignment.project_id,
+          freelancerId: assignment.freelancer_id,
+          projectTitle: assignment.project_title,
+          accepted: false,
+        });
       } catch (e) {
         console.error(e);
       }
+
       return res.json({ success: true, message: "Application rejected" });
     }
 
@@ -552,13 +571,12 @@ export const approveOrRejectApplication = async (req, res) => {
       [assignment.project_id]
     );
     if (existingAccepted.rows.length > 0) {
-  await client.query("ROLLBACK");
-  return res.status(400).json({
-    success: false,
-    message: "Already have active freelancer",
-  });
-}
-
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: "Already have active freelancer",
+      });
+    }
 
     await client.query(
       `UPDATE project_assignments SET status = 'active' WHERE id = $1`,
@@ -579,22 +597,22 @@ export const approveOrRejectApplication = async (req, res) => {
   WHERE id = $1
 `, [assignment.project_id]);
 
-
-
     await client.query("COMMIT");
 
+    // ✅ emit events
     try {
-      await NotificationCreators.freelancerApplicationStatusChanged(
-        assignment.project_id,
-        assignment.freelancer_id,
-        assignment.project_title,
-        true
-      );
-      await NotificationCreators.freelancerAssigned(
-        assignment.freelancer_id,
-        assignment.project_id,
-        assignment.project_title
-      );
+      eventBus.emit("freelancer.applicationStatusChanged", {
+        projectId: assignment.project_id,
+        freelancerId: assignment.freelancer_id,
+        projectTitle: assignment.project_title,
+        accepted: true,
+      });
+
+      eventBus.emit("freelancer.assigned", {
+        freelancerId: assignment.freelancer_id,
+        projectId: assignment.project_id,
+        projectTitle: assignment.project_title,
+      });
     } catch (e) {
       console.error(e);
     }
@@ -633,7 +651,8 @@ export const acceptAssignment = async (req, res) => {
       [assignmentId]
     );
 
-    await client.query(
+    // ✅ كان عندك client.query بدون client -> نفس المنطق بس pool.query
+    await pool.query(
       `UPDATE projects
        SET status = 'in_progress',
            completion_status = 'in_progress',
@@ -642,7 +661,6 @@ export const acceptAssignment = async (req, res) => {
       [assignment.project_id]
     );
 
-
     await LogCreators.projectOperation(
       freelancerId,
       ACTION_TYPES.ASSIGNMENT_ACCEPT,
@@ -650,13 +668,14 @@ export const acceptAssignment = async (req, res) => {
       true
     );
 
+    // ✅ emit event
     try {
-      await NotificationCreators.freelancerAcceptedAssignment(
-        assignment.project_id,
-        freelancerId
-      );
+      eventBus.emit("freelancer.acceptedAssignment", {
+        projectId: assignment.project_id,
+        freelancerId,
+      });
     } catch (err) {
-      console.error("Notification error:", err);
+      console.error("Notification emit error:", err);
     }
 
     res.json({ success: true, message: "Assignment accepted successfully, project now in progress" });
@@ -694,13 +713,15 @@ export const rejectAssignment = async (req, res) => {
       assignment.project_id,
       true
     );
+
+    // ✅ emit event
     try {
-      await NotificationCreators.freelancerRejectedAssignment(
-        assignment.project_id,
-        freelancerId
-      );
+      eventBus.emit("freelancer.rejectedAssignment", {
+        projectId: assignment.project_id,
+        freelancerId,
+      });
     } catch (err) {
-      console.error("Notification error:", err);
+      console.error("Notification emit error:", err);
     }
 
     res.json({ success: true, message: "Assignment rejected successfully" });
@@ -806,12 +827,12 @@ export const approveWorkCompletion = async (req, res) => {
 
       for (const f of freelancers) {
         try {
-          await NotificationCreators?.workCompletionReviewed?.(
-            f.freelancer_id,
+          eventBus.emit("work.reviewed", {
+            freelancerId: f.freelancer_id,
             projectId,
-            project.title,
-            newStatus
-          );
+            projectTitle: project.title,
+            status: newStatus,
+          });
         } catch {}
       }
     } catch {}
@@ -921,14 +942,15 @@ export const resubmitWorkCompletion = async (req, res) => {
       { action: "revision_resubmitted" }
     );
 
+    // ✅ emit event
     try {
-      await NotificationCreators.workResubmittedForReview(
+      eventBus.emit("work.resubmitted", {
         projectId,
-        project.title,
-        freelancerId
-      );
+        projectTitle: project.title,
+        freelancerId,
+      });
     } catch (notifErr) {
-      console.error("Notification error:", notifErr);
+      console.error("Notification emit error:", notifErr);
     }
 
     return res.json({
@@ -1528,22 +1550,35 @@ export const submitProjectDelivery = async (req, res) => {
 
       uploadedFiles.push(rows[0]);
     }
-await pool.query(
-  `UPDATE project_change_requests
-      SET is_resolved = true
-    WHERE project_id = $1
-      AND freelancer_id = $2
-      AND is_resolved = false`,
-  [projectId, freelancerId]
-);
-await pool.query(
-  `UPDATE projects
-      SET status = 'pending_review',
-          completion_status = 'pending_review',
-          updated_at = NOW()
-    WHERE id = $1`,
-  [projectId]
-);
+    await pool.query(
+      `UPDATE project_change_requests
+          SET is_resolved = true
+        WHERE project_id = $1
+          AND freelancer_id = $2
+          AND is_resolved = false`,
+      [projectId, freelancerId]
+    );
+    await pool.query(
+      `UPDATE projects
+          SET status = 'pending_review',
+              completion_status = 'pending_review',
+              updated_at = NOW()
+        WHERE id = $1`,
+      [projectId]
+    );
+
+    // ✅ emit event (notify client about submission)
+    try {
+      eventBus.emit("work.submitted", {
+        clientId: project.client_id,
+        projectId,
+        projectTitle: project.title,
+        freelancerId,
+        messageText: `📦 Work submitted for "${project.title || "your project"}".`,
+      });
+    } catch (e) {
+      console.error("work.submitted emit error:", e);
+    }
 
     return res.status(201).json({
       success: true,
@@ -1701,15 +1736,14 @@ export const requestProjectChanges = async (req, res) => {
     const freelancerId = ar[0].freelancer_id;
 
     // 1) change status back to in_progress
-   await pool.query(
-  `UPDATE projects
-      SET status = 'in_progress',
-          completion_status = 'in_progress',
-          updated_at = NOW()
-    WHERE id = $1`,
-  [projectId]
-);
-
+    await pool.query(
+      `UPDATE projects
+          SET status = 'in_progress',
+              completion_status = 'in_progress',
+              updated_at = NOW()
+        WHERE id = $1`,
+      [projectId]
+    );
 
     // 2) store change request message
     const { rows: cr } = await pool.query(

@@ -68,12 +68,34 @@ eventBus.on(
 eventBus.on(
   "project.created",
   safe("project.created", async (data) => {
-    const { projectId, projectTitle, clientId, categoryId } = data;
+    const { projectId, projectTitle, clientId, categoryId, status } = data;
+
+    // ✅ for bidding projects: notify admins now, freelancers later when activated
     await NotificationCreators.projectCreated(
       projectId,
       projectTitle,
       clientId,
-      categoryId
+      categoryId,
+      {
+        notifyAdmins: true,
+        notifyFreelancers: String(status || "").toLowerCase() === "active",
+      }
+    );
+  })
+);
+
+eventBus.on(
+  "project.activated",
+  safe("project.activated", async (data) => {
+    const { projectId, projectTitle, clientId, categoryId } = data;
+
+    // ✅ when project becomes active: notify freelancers only
+    await NotificationCreators.projectCreated(
+      projectId,
+      projectTitle,
+      clientId,
+      categoryId,
+      { notifyAdmins: false, notifyFreelancers: true }
     );
   })
 );

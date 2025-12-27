@@ -154,6 +154,28 @@ const truncate = (text, max = 70) => {
   return t.length > max ? `${t.slice(0, max)}…` : t;
 };
 
+// ✅ Hide names for non-admin users
+const anonymizeMessageForRole = (message, roleId) => {
+  // Admin sees full names
+  if (roleId === 1) return message;
+
+  if (!message) return message;
+
+  return (
+    message
+      // "from NAME" -> "from a user"
+      .replace(/\bfrom\s+[^:"]+/gi, "from a user")
+      // "by NAME" -> "by a user"
+      .replace(/\bby\s+[^:"]+/gi, "by a user")
+      // "NAME applied" -> "A freelancer applied"
+      .replace(/^[A-Za-z0-9_ ]+\s+applied/gi, "A freelancer applied")
+      // "NAME accepted/rejected" -> "The freelancer accepted/rejected"
+      .replace(/^[A-Za-z0-9_ ]+\s+(accepted|rejected)/gi, "The freelancer $1")
+      // any quoted "NAME" -> "the user"
+      .replace(/\"[A-Za-z0-9_ ]+\"/g, '"the user"')
+  );
+};
+
 const emitSocket = (userId, notificationRow) => {
   try {
     if (global.io) {
@@ -223,9 +245,9 @@ export const createNotification = async (
     if (!uid) return null;
 
     const notifType = safeText(type);
-    const notifMsg = safeText(message);
+    const rawMsg = safeText(message);
 
-    if (!notifType || !notifMsg) return null;
+    if (!notifType || !rawMsg) return null;
 
     // get role
     const { rows: userRows } = await pool.query(
@@ -238,6 +260,9 @@ export const createNotification = async (
 
     // role restrictions
     if (!(ROLE_NOTIFICATIONS[roleId] || []).includes(notifType)) return null;
+
+    // ✅ anonymize message for non-admins
+    const notifMsg = anonymizeMessageForRole(rawMsg, roleId);
 
     const relId = relatedEntityId === null ? null : toInt(relatedEntityId);
     const entType = entityType ? String(entityType) : null;
@@ -817,5 +842,4 @@ export default {
   markAllNotificationsAsRead,
   getNotificationCount,
   cleanupOldNotifications,
-  NotificationCreators,
 };

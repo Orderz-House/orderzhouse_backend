@@ -95,20 +95,22 @@ const deliverOtp = async (destination, method, otp) => {
    REGISTER
 ====================================================== */
 const register = async (req, res) => {
-  const {
-    role_id,
-    first_name,
-    last_name,
-    email,
-    password,
-    phone_number,
-    country,
-    username,
-    category_id, // New field for main category
-    sub_category_ids = [], // New field for sub-categories
-    categories = [], // Old field (for backward compatibility)
-    sub_sub_categories = [], // Old field (for backward compatibility)
-  } = req.body;
+  const client = await pool.connect();
+
+  try {
+    const {
+      role_id,
+      first_name,
+      last_name,
+      email,
+      password,
+      phone_number,
+      country,
+      username,
+
+      // ✅ NEW: freelancer chooses multiple main categories
+      category_ids = [],
+    } = req.body;
 
     /* =========================
        BASIC VALIDATION
@@ -148,35 +150,94 @@ const register = async (req, res) => {
       });
     }
 
-  if (!passwordRegex.test(password)) {
-    return res.status(400).json({
-      success: false,
-      message:
-        "Password must include at least 8 characters, 1 uppercase, 1 lowercase, and 1 number",
-    });
-  }
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Password must be at least 8 chars, include upper, lower, number",
+      });
+    }
 
-  try {
-    const emailLower = email.toLowerCase();
+    /* =========================
+       FREELANCER VALIDATION
+    ========================= */
+    if (roleId === 3) {
+      if (!Array.isArray(category_ids)) {
+        return res.status(400).json({
+          success: false,
+          message: "category_ids must be an array",
+        });
+      }
 
-    const existingUser = await pool.query(
+      if (category_ids.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "At least one category is required for freelancers",
+        });
+      }
+
+      // optional safety limit
+      if (category_ids.length > 5) {
+        return res.status(400).json({
+          success: false,
+          message: "Maximum 5 categories allowed",
+        });
+      }
+    }
+
+    /* =========================
+       START TRANSACTION
+    ========================= */
+    await client.query("BEGIN");
+
+    /* =========================
+       UNIQUE USER CHECK
+    ========================= */
+    const existingUser = await client.query(
       "SELECT id FROM users WHERE email = $1 OR username = $2",
       [emailLower, username]
     );
 
     if (existingUser.rows.length > 0) {
-      return res
-        .status(409)
-        .json({ success: false, message: "Email or username already exists" });
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        message: "Email or username already exists",
+      });
     }
 
+    /* =========================
+       CATEGORY VALIDATION (MAIN ONLY)
+    ========================= */
+    if (roleId === 3) {
+      const categoryCheck = await client.query(
+        `SELECT id
+         FROM categories
+         WHERE is_deleted = false
+           AND level = 0
+           AND id = ANY($1::int[])`,
+        [category_ids]
+      );
+
+      if (categoryCheck.rows.length !== category_ids.length) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: "One or more category_ids are invalid",
+        });
+      }
+    }
+
+    /* =========================
+       CREATE USER
+    ========================= */
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const userResult = await client.query(
       `INSERT INTO users
         (role_id, first_name, last_name, email, password, phone_number, country, username, email_verified)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,FALSE)
-       RETURNING *`,
+       RETURNING id, email, first_name`,
       [
         roleId,
         first_name,
@@ -188,121 +249,65 @@ const register = async (req, res) => {
         username,
       ]
     );
-    const user = rows[0];
 
-    // ربط الكاتيجوري/sub_sub للفريلانسر باستخدام الهيكل الجديد
-    if (parseInt(role_id, 10) === 3) {
-      // استخدام الهيكل الجديد إذا كان متاحاً
-      if (category_id) {
-        // ربط الفريلانسر بالكاتيجوري الرئيسية
-        await pool.query(
-          `INSERT INTO freelancer_categories (freelancer_id, category_id)
-           VALUES ($1, $2)
-           ON CONFLICT (freelancer_id, category_id) DO NOTHING`,
-          [user.id, category_id]
-        );
-      }
+    const user = userResult.rows[0];
 
-      // ربط الفريلانسر بـ sub-categories
-      if (Array.isArray(sub_category_ids) && sub_category_ids.length > 0) {
-        // التحقق من أن عدد sub-categories لا يتجاوز 3
-        if (sub_category_ids.length > 3) {
-          return res.status(400).json({
-            success: false,
-            message: "You can select a maximum of 3 sub-categories"
-          });
-        }
-
-        // التحقق من أن جميع sub-categories تنتمي إلى نفس category_id
-        if (category_id) {
-          const { rows: validSubCategories } = await pool.query(
-            `SELECT id FROM sub_categories WHERE id = ANY($1) AND category_id = $2`,
-            [sub_category_ids, category_id]
-          );
-          
-          if (validSubCategories.length !== sub_category_ids.length) {
-            return res.status(400).json({
-              success: false,
-              message: "Some sub-categories do not belong to the selected main category"
-            });
-          }
-        }
-
-        // إدخال sub-categories المحددة
-        for (const subCatId of sub_category_ids) {
-          await pool.query(
-            `INSERT INTO freelancer_sub_categories (freelancer_id, sub_category_id)
-             VALUES ($1, $2)
-             ON CONFLICT (freelancer_id, sub_category_id) DO NOTHING`,
-            [user.id, subCatId]
-          );
-        }
-      }
-
-      // للتوافق مع الهيكل القديم (إذا كان لا يزال مستخدماً)
-      if (Array.isArray(categories) && categories.length > 0) {
-        for (const catId of categories) {
-          await pool.query(
-            `INSERT INTO freelancer_categories (freelancer_id, category_id)
-             VALUES ($1, $2)
-             ON CONFLICT (freelancer_id, category_id) DO NOTHING`,
-            [user.id, catId]
-          );
-        }
-      }
-
-      if (
-        Array.isArray(sub_sub_categories) &&
-        sub_sub_categories.length > 0
-      ) {
-        for (const subSubId of sub_sub_categories) {
-          await pool.query(
-            `INSERT INTO freelancer_sub_sub_categories (freelancer_id, sub_sub_category_id)
-             VALUES ($1, $2)
-             ON CONFLICT (freelancer_id, sub_sub_category_id) DO NOTHING`,
-            [user.id, subSubId]
-          );
-        }
-      }
+    /* =========================
+       FREELANCER → MULTI CATEGORIES
+    ========================= */
+    if (roleId === 3) {
+      await client.query(
+        `INSERT INTO freelancer_categories (freelancer_id, category_id)
+         SELECT $1, unnest($2::int[])`,
+        [user.id, category_ids]
+      );
     }
 
-    // توليد OTP للإيميل
+    /* =========================
+       EMAIL OTP
+    ========================= */
     const otp = generateOtp();
-    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 دقائق
+    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
 
-    await pool.query(
-      "UPDATE users SET email_otp = $1, email_otp_expires = $2 WHERE id = $3",
+    await client.query(
+      `UPDATE users
+       SET email_otp = $1, email_otp_expires = $2
+       WHERE id = $3`,
       [otp, otpExpiry, user.id]
     );
 
-    // إرسال OTP
-    const mailOptions = {
+    await transporter.sendMail({
       from: `"OrderzHouse" <${process.env.EMAIL_FROM}>`,
       to: user.email,
-      subject: "Verify your email address",
+      subject: "Verify your email",
       html: `
-        <h2>Hello ${user.first_name},</h2>
-        <p>Use the following One-Time Password (OTP) to verify your email:</p>
-        <h1 style="color:#007bff; font-size: 28px; letter-spacing:4px;">${otp}</h1>
-        <p>This code expires in <b>5 minutes</b>.</p>
-        <br/>
-        <p>Thanks,<br/>OrderzHouse Team</p>
+        <h2>Hello ${user.first_name}</h2>
+        <p>Your verification code:</p>
+        <h1>${otp}</h1>
+        <p>Expires in 5 minutes</p>
       `,
-    };
+    });
 
-    await transporter.sendMail(mailOptions);
+    /* =========================
+       COMMIT
+    ========================= */
+    await client.query("COMMIT");
 
     return res.status(201).json({
       success: true,
-      message:
-        "User registered successfully. OTP sent to email for verification ✅",
+      message: "Registered successfully. OTP sent ✅",
       user_id: user.id,
     });
   } catch (err) {
-    console.error("Register Error:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Server error", error: err.message });
+    await client.query("ROLLBACK");
+    console.error("REGISTER ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Registration failed",
+      error: err.message,
+    });
+  } finally {
+    client.release();
   }
 };
 
@@ -354,8 +359,11 @@ const verifyEmailOtp = async (req, res) => {
       success: true,
       message: "Email verified successfully ✅",
     });
-  } finally {
-    client.release();
+  } catch (err) {
+    console.error("Verify Email OTP Error:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Server error" });
   }
 };
 
@@ -1117,7 +1125,7 @@ export {
   verifyPassword,
   updatePassword,
   deactivateAccount,
-  // verifyEmailOtp,
+  verifyEmailOtp,
   uploadProfilePic,
   sendOtpController,
   getUserdata,

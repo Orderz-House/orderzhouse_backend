@@ -9,7 +9,7 @@ import {
   verifyPassword,
   updatePassword,
   deactivateAccount,
-  // verifyEmailOtp,
+  verifyEmailOtp,
   uploadProfilePic,
   sendOtpController,
   getUserdata,
@@ -23,7 +23,7 @@ const usersRouter = express.Router();
 
 // =============== PUBLIC ROUTES ===============
 usersRouter.post("/register", register);
-// usersRouter.post("/verify-email", verifyEmailOtp);
+usersRouter.post("/verify-email", verifyEmailOtp);
 usersRouter.post("/login", login);
 usersRouter.post("/verify-otp", verifyOTP);
 usersRouter.post("/send-otp", sendOtpController);

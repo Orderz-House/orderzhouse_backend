@@ -41,39 +41,67 @@ export const sendOffer = async (req, res) => {
     const freelancerId = req.token?.userId;
     const freelancerName = req.token?.username || "Freelancer";
     const { projectId } = req.params;
-    const { bid_amount, proposal } = req.body;
 
-    if (!freelancerId)
-      return res.status(401).json({ success: false, message: "Unauthorized" });
+    const bid_amount =
+      req.body.bid_amount ?? req.body.offer_amount ?? null;
+    const proposal = req.body.proposal ?? "";
 
-    if (!projectId || bid_amount == null) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Missing required fields" });
+    if (!freelancerId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
     }
 
+    if (!projectId || bid_amount === null) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields",
+      });
+    }
+
+    const bid = Number(bid_amount);
+    if (!Number.isFinite(bid) || bid <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid bid amount",
+      });
+    }
+
+    // ============================
+    // Fetch project
+    // ============================
     const projectQuery = await pool.query(
       `SELECT user_id, title, status, budget_min, budget_max
-       FROM projects WHERE id = $1 AND is_deleted = false`,
+       FROM projects
+       WHERE id = $1 AND is_deleted = false`,
       [projectId]
     );
 
-    if (!projectQuery.rows.length)
-      return res
-        .status(404)
-        .json({ success: false, message: "Project not found" });
+    if (!projectQuery.rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
+    }
 
     const project = projectQuery.rows[0];
 
     if (project.status !== "bidding") {
-      return res
-        .status(400)
-        .json({ success: false, message: "Project not open for bidding" });
+      return res.status(400).json({
+        success: false,
+        message: "Project not open for bidding",
+      });
     }
 
+    // ============================
+    // Budget validation
+    // ============================
     if (
-      (project.budget_min != null && bid_amount < project.budget_min) ||
-      (project.budget_max != null && bid_amount > project.budget_max)
+      (project.budget_min !== null &&
+        bid < Number(project.budget_min)) ||
+      (project.budget_max !== null &&
+        bid > Number(project.budget_max))
     ) {
       return res.status(400).json({
         success: false,
@@ -81,31 +109,44 @@ export const sendOffer = async (req, res) => {
       });
     }
 
+    // ============================
+    // ✅ CORRECT offer check
+    // ============================
     const existingOffer = await pool.query(
-      `SELECT id 
-       FROM offers 
-       WHERE project_id = $1 
-         AND freelancer_id = $2 
-         AND offer_status = 'pending'`,
+      `SELECT id
+       FROM offers
+       WHERE project_id = $1
+         AND freelancer_id = $2
+         AND offer_status IN ('pending', 'accepted')
+       LIMIT 1`,
       [projectId, freelancerId]
     );
 
     if (existingOffer.rows.length > 0) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Pending offer already exists" });
+      return res.status(400).json({
+        success: false,
+        message: "You have already submitted an offer for this project",
+      });
     }
 
+    // ============================
+    // Insert offer
+    // ============================
     const insertQuery = await pool.query(
-      `INSERT INTO offers (freelancer_id, project_id, bid_amount, proposal, offer_status)
-       VALUES ($1, $2, $3, $4, 'pending') 
-       RETURNING *`,
-      [freelancerId, projectId, bid_amount, proposal]
+      `INSERT INTO offers (
+        freelancer_id,
+        project_id,
+        bid_amount,
+        proposal,
+        offer_status
+      )
+      VALUES ($1, $2, $3, $4, 'pending')
+      RETURNING *`,
+      [freelancerId, projectId, bid, proposal]
     );
 
     const newOffer = insertQuery.rows[0];
 
-    // ✅ EVENT BUS: offer submitted
     try {
       eventBus.emit("offer.submitted", {
         offerId: newOffer.id,
@@ -114,22 +155,26 @@ export const sendOffer = async (req, res) => {
         clientId: project.user_id,
         freelancerId,
         freelancerName,
-        bidAmount: bid_amount,
+        bidAmount: bid,
       });
     } catch (e) {
       console.error("eventBus error on offer.submitted:", e);
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Offer sent successfully",
       offer: newOffer,
     });
   } catch (err) {
     console.error("sendOffer error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 };
+
 
 /**
  * -------------------------------
@@ -146,14 +191,12 @@ export const approveOrRejectOffer = async (req, res) => {
       return res.status(401).json({ success: false, message: "Unauthorized" });
 
     if (!["accept", "reject"].includes(action))
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid action" });
+      return res.status(400).json({ success: false, message: "Invalid action" });
 
     const { rows: offerRows } = await client.query(
-      `SELECT o.*, p.user_id AS client_id, p.title AS project_title 
-       FROM offers o 
-       JOIN projects p ON o.project_id = p.id 
+      `SELECT o.*, p.user_id AS client_id, p.title AS project_title, p.project_type
+       FROM offers o
+       JOIN projects p ON o.project_id = p.id
        WHERE o.id = $1`,
       [offerId]
     );
@@ -162,7 +205,7 @@ export const approveOrRejectOffer = async (req, res) => {
       return res.status(404).json({ success: false, message: "Offer not found" });
 
     const offer = offerRows[0];
-    if (offer.client_id !== clientId)
+    if (String(offer.client_id) !== String(clientId))
       return res.status(403).json({ success: false, message: "Not authorized" });
 
     await client.query("BEGIN");
@@ -173,7 +216,6 @@ export const approveOrRejectOffer = async (req, res) => {
         [offerId]
       );
 
-      // ✅ EVENT BUS: offer rejected (single)
       try {
         eventBus.emit("offer.statusChanged", {
           offerId: offer.id,
@@ -191,24 +233,24 @@ export const approveOrRejectOffer = async (req, res) => {
     }
 
     if (action === "accept") {
-      // ✅ Check if already accepted offer exists
       const acceptedOffer = await client.query(
         `SELECT id FROM offers WHERE project_id = $1 AND offer_status = 'accepted'`,
         [offer.project_id]
       );
+
       if (acceptedOffer.rows.length > 0) {
         await client.query("ROLLBACK");
-        return res
-          .status(400)
-          .json({ success: false, message: "Only one offer can be accepted per project" });
+        return res.status(400).json({
+          success: false,
+          message: "Only one offer can be accepted per project",
+        });
       }
 
-      // ✅ Check if freelancer has active assignments
       const activeAssignment = await client.query(
-        `SELECT id 
-         FROM project_assignments 
-         WHERE freelancer_id = $1 
-           AND status IN ('active', 'pending_acceptance', 'in_progress')`,
+        `SELECT id
+           FROM project_assignments
+          WHERE freelancer_id = $1
+            AND status IN ('active', 'pending_acceptance', 'in_progress')`,
         [offer.freelancer_id]
       );
 
@@ -216,17 +258,17 @@ export const approveOrRejectOffer = async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(400).json({
           success: false,
-          message: "This freelancer is already assigned to another active or pending project.",
+          message:
+            "This freelancer is already assigned to another active or pending project.",
         });
       }
 
-      // ✅ (THIS IS THE "بس" اللي قصدته): fetch other pending offers BEFORE rejecting them
       const { rows: otherPendingOffers } = await client.query(
         `SELECT id, freelancer_id
-         FROM offers
-         WHERE project_id = $1
-           AND id <> $2
-           AND offer_status = 'pending'`,
+           FROM offers
+          WHERE project_id = $1
+            AND id <> $2
+            AND offer_status = 'pending'`,
         [offer.project_id, offerId]
       );
 
@@ -235,14 +277,25 @@ export const approveOrRejectOffer = async (req, res) => {
         [offerId]
       );
 
-      // ✅ Mark all other offers for this project as "rejected"
       await client.query(
-        `UPDATE offers 
-         SET offer_status = 'rejected' 
-         WHERE project_id = $1 
-           AND id <> $2 
-           AND offer_status = 'pending'`,
+        `UPDATE offers
+            SET offer_status = 'rejected'
+          WHERE project_id = $1
+            AND id <> $2
+            AND offer_status = 'pending'`,
         [offer.project_id, offerId]
+      );
+
+      // ✅ FIX: status != 'bidding' (bidding is project_type)
+      await client.query(
+        `UPDATE projects
+            SET status = 'in_progress',
+                completion_status = 'in_progress',
+                updated_at = NOW()
+          WHERE id = $1
+            AND is_deleted = false
+            AND project_type = 'bidding'`,
+        [offer.project_id]
       );
 
       try {
@@ -252,11 +305,11 @@ export const approveOrRejectOffer = async (req, res) => {
           [offer.project_id, offer.freelancer_id]
         );
       } catch (assignErr) {
-        // If assignment already exists, just update it
-        if (assignErr.code === '23505') { // duplicate key error
+        if (assignErr.code === "23505") {
           await client.query(
-            `UPDATE project_assignments SET status = 'active', assigned_at = NOW() 
-             WHERE project_id = $1 AND freelancer_id = $2`,
+            `UPDATE project_assignments
+                SET status = 'active', assigned_at = NOW()
+              WHERE project_id = $1 AND freelancer_id = $2`,
             [offer.project_id, offer.freelancer_id]
           );
         } else {
@@ -266,17 +319,17 @@ export const approveOrRejectOffer = async (req, res) => {
 
       try {
         await client.query(
-          `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status) 
+          `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status)
            VALUES ($1, $2, $3, $4, 'held')`,
           [offer.project_id, offer.client_id, offer.freelancer_id, offer.bid_amount]
         );
       } catch (escrowErr) {
-        // If escrow already exists, just update it
-        if (escrowErr.code === '23505') { // duplicate key error
+        if (escrowErr.code === "23505") {
           await client.query(
-            `UPDATE escrow SET amount = $4, status = 'held' 
-             WHERE project_id = $1`,
-            [offer.project_id, offer.client_id, offer.freelancer_id, offer.bid_amount]
+            `UPDATE escrow
+                SET amount = $2, status = 'held'
+              WHERE project_id = $1`,
+            [offer.project_id, offer.bid_amount]
           );
         } else {
           throw escrowErr;
@@ -284,7 +337,6 @@ export const approveOrRejectOffer = async (req, res) => {
       }
 
       try {
-        // accepted offer
         eventBus.emit("offer.statusChanged", {
           offerId: offer.id,
           projectId: offer.project_id,
@@ -293,7 +345,6 @@ export const approveOrRejectOffer = async (req, res) => {
           accepted: true,
         });
 
-        // assignment changed
         eventBus.emit("freelancer.assignmentChanged", {
           projectId: offer.project_id,
           projectTitle: offer.project_title,
@@ -301,7 +352,6 @@ export const approveOrRejectOffer = async (req, res) => {
           assigned: true,
         });
 
-        // escrow funded/held
         eventBus.emit("escrow.funded", {
           projectId: offer.project_id,
           projectTitle: offer.project_title,
@@ -309,7 +359,7 @@ export const approveOrRejectOffer = async (req, res) => {
           amount: offer.bid_amount,
         });
 
-        if (Array.isArray(otherPendingOffers) && otherPendingOffers.length > 0) {
+        if (Array.isArray(otherPendingOffers)) {
           for (const o of otherPendingOffers) {
             eventBus.emit("offer.statusChanged", {
               offerId: o.id,
@@ -328,7 +378,8 @@ export const approveOrRejectOffer = async (req, res) => {
       await client.query("COMMIT");
       return res.json({
         success: true,
-        message: "Offer accepted, other offers rejected, freelancer assigned, escrow funded",
+        message:
+          "Offer accepted, project started, other offers rejected, freelancer assigned, escrow funded",
       });
     }
   } catch (error) {
@@ -339,6 +390,7 @@ export const approveOrRejectOffer = async (req, res) => {
     client.release();
   }
 };
+
 
 /**
  * -------------------------------
@@ -604,6 +656,34 @@ export const getAcceptedOffers = async (req, res) => {
     res.json({ success: true, offers: rows });
   } catch (err) {
     console.error("getAcceptedOffers error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+export const checkMyPendingOffer = async (req, res) => {
+  try {
+    const freelancerId = req.token?.userId;
+    const { projectId } = req.params;
+
+    if (!freelancerId)
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const { rows } = await pool.query(
+      `SELECT id
+       FROM offers
+       WHERE project_id = $1
+         AND freelancer_id = $2
+         AND offer_status = 'pending'
+       LIMIT 1`,
+      [projectId, freelancerId]
+    );
+
+    return res.json({
+      success: true,
+      hasPendingOffer: rows.length > 0,
+    });
+  } catch (err) {
+    console.error("checkMyPendingOffer error:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 };

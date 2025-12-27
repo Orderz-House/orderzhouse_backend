@@ -25,7 +25,8 @@ import {
   reassignFreelancer,
   submitProjectDelivery,
   getProjectDeliveries,
-  adminApproveProject 
+  adminApproveProject,
+  requestProjectChanges,
 } from "../controller/projectsManagment/projects.js";
 
 import {
@@ -282,4 +283,9 @@ projectsRouter.post(
   adminApproveProject
 );
 
+projectsRouter.post(
+  "/:projectId/request-changes",
+  authentication,
+  requestProjectChanges
+);
 export default projectsRouter;

@@ -374,6 +374,7 @@ export const getProjectsByUserRole = async (req, res) => {
           c.name AS category_name,
           sc.name AS sub_category_name,
           ssc.name AS sub_sub_category_name
+          
         FROM projects p
         JOIN users u ON p.user_id = u.id
         LEFT JOIN categories c ON p.category_id = c.id
@@ -393,7 +394,28 @@ export const getProjectsByUserRole = async (req, res) => {
           ssc.name AS sub_sub_category_name,
           pa.status AS assignment_status,
           pa.assignment_type,
-          pa.deadline
+          pa.deadline,
+          
+(
+  SELECT pcr.message
+  FROM project_change_requests pcr
+  WHERE pcr.project_id = p.id
+    AND pcr.freelancer_id = pa.freelancer_id
+    AND pcr.is_resolved = false
+  ORDER BY pcr.created_at DESC
+  LIMIT 1
+) AS change_request_message
+,
+(
+  SELECT pcr.created_at
+  FROM project_change_requests pcr
+  WHERE pcr.project_id = p.id
+    AND pcr.freelancer_id = pa.freelancer_id
+    AND pcr.is_resolved = false
+  ORDER BY pcr.created_at DESC
+  LIMIT 1
+) AS change_request_at
+
         FROM projects p
         JOIN project_assignments pa ON pa.project_id = p.id
         JOIN users u ON p.user_id = u.id

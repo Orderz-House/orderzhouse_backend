@@ -33,14 +33,16 @@ export const uploadToCloudinary = (buffer, folder = "project_files") => {
     stream.pipe(uploadStream);
   });
 };
-
 /* ======================================================================
    1) CREATE PROJECT
 ====================================================================== */
-
 export const createProject = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.token?.userId;
+
+    await client.query("SELECT pg_advisory_xact_lock($1)", [userId]);
+
     const {
       category_id,
       sub_category_id,
@@ -109,14 +111,30 @@ export const createProject = async (req, res) => {
       });
     }
 
-    // ------------ Project status logic ------------
-    let projectStatus = "pending";
-    if (project_type === "bidding") projectStatus = "bidding";
-    else if (["fixed", "hourly"].includes(project_type))
-      projectStatus = "pending_payment";
+    let projectStatus;
+    if (project_type === "bidding") {
+      projectStatus = "bidding";
+    } else {
+      projectStatus = "active";
+    }
 
-    const durationDaysValue = duration_type === "days" ? duration_days : null;
-    const durationHoursValue = duration_type === "hours" ? duration_hours : null;
+    const durationDaysValue =
+      duration_type === "days" ? Number(duration_days) : null;
+
+    const durationHoursValue =
+      duration_type === "hours" ? Number(duration_hours) : null;
+
+    const normalizedBudget =
+      project_type === "fixed" ? Number(budget) : null;
+
+    const normalizedBudgetMin =
+      project_type === "bidding" ? Number(budget_min) : null;
+
+    const normalizedBudgetMax =
+      project_type === "bidding" ? Number(budget_max) : null;
+
+    const normalizedHourlyRate =
+      project_type === "hourly" ? Number(hourly_rate) : null;
 
     // ------------ Step 1: Insert project ------------
     const insertQuery = `
@@ -131,20 +149,20 @@ export const createProject = async (req, res) => {
       ) RETURNING *;
     `;
 
-    const { rows } = await pool.query(insertQuery, [
+    const { rows } = await client.query(insertQuery, [
       userId,
       category_id,
       sub_category_id,
       sub_sub_category_id,
       title.trim(),
       description.trim(),
-      budget || null,
+      normalizedBudget,        
       durationDaysValue,
       durationHoursValue,
       project_type,
-      budget_min || null,
-      budget_max || null,
-      hourly_rate || null,
+      normalizedBudgetMin,    
+      normalizedBudgetMax,     
+      normalizedHourlyRate,    
       preferred_skills || [],
       projectStatus,
     ]);
@@ -158,15 +176,13 @@ export const createProject = async (req, res) => {
         coverPicFile.buffer,
         `projects/${project.id}/cover`
       );
-      const coverPicUrl = coverPicResult.secure_url;
 
-      const { rows: updatedProject } = await pool.query(
+      const { rows: updatedProject } = await client.query(
         `UPDATE projects SET cover_pic = $1 WHERE id = $2 RETURNING *`,
-        [coverPicUrl, project.id]
+        [coverPicResult.secure_url, project.id]
       );
       project = updatedProject[0];
     }
-
 
     // ------------ Step 3: logs & notifications ------------
     await LogCreators.projectOperation(
@@ -192,8 +208,11 @@ export const createProject = async (req, res) => {
   } catch (error) {
     console.error("createProject error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
+  } finally {
+    client.release();
   }
 };
+
 
 // Admin approve project after payment
 
@@ -1509,6 +1528,22 @@ export const submitProjectDelivery = async (req, res) => {
 
       uploadedFiles.push(rows[0]);
     }
+await pool.query(
+  `UPDATE project_change_requests
+      SET is_resolved = true
+    WHERE project_id = $1
+      AND freelancer_id = $2
+      AND is_resolved = false`,
+  [projectId, freelancerId]
+);
+await pool.query(
+  `UPDATE projects
+      SET status = 'pending_review',
+          completion_status = 'pending_review',
+          updated_at = NOW()
+    WHERE id = $1`,
+  [projectId]
+);
 
     return res.status(201).json({
       success: true,
@@ -1624,6 +1659,69 @@ export const getProjectDeliveries = async (req, res) => {
     });
   } catch (err) {
     console.error("getProjectDeliveries error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+export const requestProjectChanges = async (req, res) => {
+  const clientId = req.token?.userId;
+  const { projectId } = req.params;
+  const { message } = req.body;
+
+  if (!clientId) return res.status(401).json({ success: false, message: "Unauthorized" });
+  if (!projectId) return res.status(400).json({ success: false, message: "Missing projectId" });
+  if (!String(message || "").trim()) {
+    return res.status(400).json({ success: false, message: "Message is required" });
+  }
+
+  try {
+    // project + owner check
+    const { rows: pr } = await pool.query(
+      `SELECT id, user_id AS client_id
+         FROM projects
+        WHERE id = $1 AND is_deleted = false`,
+      [projectId]
+    );
+    if (!pr.length) return res.status(404).json({ success: false, message: "Project not found" });
+    if (String(pr[0].client_id) !== String(clientId)) {
+      return res.status(403).json({ success: false, message: "Not authorized" });
+    }
+
+    // get active freelancer assignment
+    const { rows: ar } = await pool.query(
+      `SELECT freelancer_id
+         FROM project_assignments
+        WHERE project_id = $1 AND status = 'active'
+        `,
+      [projectId]
+    );
+    if (!ar.length) {
+      return res.status(400).json({ success: false, message: "No active freelancer assignment" });
+    }
+    const freelancerId = ar[0].freelancer_id;
+
+    // 1) change status back to in_progress
+   await pool.query(
+  `UPDATE projects
+      SET status = 'in_progress',
+          completion_status = 'in_progress',
+          updated_at = NOW()
+    WHERE id = $1`,
+  [projectId]
+);
+
+
+    // 2) store change request message
+    const { rows: cr } = await pool.query(
+      `INSERT INTO project_change_requests (project_id, client_id, freelancer_id, message)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, project_id, freelancer_id, message, created_at`,
+      [projectId, clientId, freelancerId, message.trim()]
+    );
+
+    return res.json({ success: true, change_request: cr[0] });
+  } catch (err) {
+    console.error("requestProjectChanges error:", err);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };

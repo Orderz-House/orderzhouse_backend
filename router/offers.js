@@ -10,6 +10,7 @@ import {
   getAllProjectForOffer,
   cancelOffer,
   getAcceptedOffers,
+  checkMyPendingOffer,
 } from "../controller/offers.js";
 
 const offersRouter = express.Router();
@@ -74,5 +75,13 @@ offersRouter.get(
   authentication,
   getAcceptedOffers
 );
+
+offersRouter.get(
+  "/my/:projectId/pending",
+  authentication,
+  requireVerifiedWithSubscription,
+  checkMyPendingOffer
+);
+
 
 export default offersRouter;

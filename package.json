@@ -3,15 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "cross-env NODE_ENV=test jest"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
   "dependencies": {
     "@adminjs/express": "^6.1.1",
     "@adminjs/sql": "^2.2.6",
@@ -32,8 +29,7 @@
     "form-data": "^4.0.4",
     "googleapis": "^160.0.0",
     "jsonwebtoken": "^9.0.2",
-    "lucide-react": "^0.543.0",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.0.0",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.10",
     "pg": "^8.16.3",

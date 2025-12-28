@@ -18,13 +18,11 @@ dotenv.config();
 // Start real-time deadline watcher
 startDeadlineWatcher();
 
-// delete permanently after 30 days
+// Cleanup deactivated users every 20 mins
 cron.schedule("*/20 * * * *", async () => {
-console.log("Running cleanupDeactivatedUsers cron job...");
+  console.log("Running cleanupDeactivatedUsers cron job...");
   await cleanupDeactivatedUsers();
 });
-
-
 
 // Routers
 import SubscriptionRouter from "./router/subscription.js";
@@ -32,7 +30,7 @@ import CoursesRouter from "./router/course.js";
 import assignmentsRouter from "./router/assignments.js";
 import VerificationRouter from "./router/verification.js";
 import paymentsRoutes from "./router/payments.js";
-import AdminUser from "./router/adminUser.js"
+import AdminUser from "./router/adminUser.js";
 import tasksRouter from "./router/tasks.js";
 import usersRouter from "./router/user.js";
 import plansRouter from "./router/plans.js";
@@ -43,67 +41,50 @@ import notificationsRouter from "./router/notifications.js";
 import authRouter from "./router/auth.js";
 import offersRouter from "./router/offers.js";
 import ratingsRouter from "./router/rating.js";
-import Blogsrouter from "./router/blogs.js"
+import Blogsrouter from "./router/blogs.js";
 import freelancerCategoriesRouter from "./router/freelancerCategories.js";
 import subscriptionsRoutes from "./router/subscription.js";
-//import analyticsRoutes from "./router/analytics.js";
 import emailVerificationRoutes from "./router/emailVerification.js";
 import chatsRouter from "./router/chats.js";
 import StripeRouter from "./router/Stripe/stripe.js";
 import webhookRouter from "./router/Stripe/stripeWebhook.js";
 
-
-// DB connection
-dotenv.config();
+// DB connection already imported above
 
 const app = express();
-const PORT = process.env.NODE_ENV === "test" ? 0 : process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000; // Use Hostinger PORT
 
-if (process.env.NODE_ENV !== "test") {
-  app.set("trust proxy", 1);
-  
-}
-
-//stripe webhook needs the raw body
+// Stripe webhook (needs raw body)
 app.use("/stripe", webhookRouter);
 
+// Body parser
 app.use(express.json());
 
+// CORS
 app.use(cors({
   origin: [
     "https://orderzhouse.com",
     "http://localhost:5173",
-    "http://localhost:5174"
+    "http://localhost:5174",
+    "https://darkgoldenrod-quail-976616.hostingersite.com"
   ],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With']
 }));
 
-
-
-
-// Rate limiter (optional)
-/*
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: "try again later",
-});
-app.use(limiter);
-*/
+// Health endpoint
+app.get("/health", (req, res) => res.send("OK"));
 
 // Routers
-//APPOINTMENTS
 app.use("/assignments", assignmentsRouter);
 app.use("/verification", VerificationRouter);
 app.use("/freelancerCategories", freelancerCategoriesRouter);
-app.use("/blogs", Blogsrouter)
-app.use("/admUser" , AdminUser)
-app.use("/category" , categoriesRouter);
+app.use("/blogs", Blogsrouter);
+app.use("/admUser", AdminUser);
+app.use("/category", categoriesRouter);
 app.use("/tasks", tasksRouter);
 app.use("/offers", offersRouter);
-//app.use("/analytics", analyticsRoutes);
 app.use("/projects", projectsRouter);
 app.use("/users", usersRouter);
 app.use("/plans", plansRouter);
@@ -130,9 +111,7 @@ if (process.env.NODE_ENV !== "test") {
   const startServer = (portToUse) => {
     server.once("error", (err) => {
       if (err && err.code === "EADDRINUSE") {
-        console.error(
-          `⚠️ Port ${portToUse} in use. Retrying with a random free port...`
-        );
+        console.error(`⚠️ Port ${portToUse} in use. Retrying with a random free port...`);
         server.close(() => startServer(0));
         return;
       }
@@ -142,17 +121,13 @@ if (process.env.NODE_ENV !== "test") {
     server.listen(portToUse, () => {
       const addressInfo = server.address();
       const boundPort =
-        typeof addressInfo === "object" && addressInfo
-          ? addressInfo.port
-          : portToUse;
-
+        typeof addressInfo === "object" && addressInfo ? addressInfo.port : portToUse;
       console.log(`✅ Server listening at http://localhost:${boundPort}`);
     });
   };
 
   startServer(PORT);
 } else {
-  // For tests, create minimal server without socket.io
   server = http.createServer(app);
   io = null;
 }

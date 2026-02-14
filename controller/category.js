@@ -317,3 +317,26 @@ export const getSubSubCategoriesByCategoryId = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+// Get all sub-sub-categories (for homepage search)
+export const getAllSubSubCategories = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ssc.id,
+              ssc.name,
+              sc.id AS sub_category_id,
+              sc.name AS sub_category_name,
+              c.id AS category_id,
+              c.name AS category_name
+       FROM sub_sub_categories ssc
+       JOIN sub_categories sc ON ssc.sub_category_id = sc.id
+       JOIN categories c ON sc.category_id = c.id
+       WHERE c.is_deleted = false
+       ORDER BY ssc.name ASC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("getAllSubSubCategories error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};

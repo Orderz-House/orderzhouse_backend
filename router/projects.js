@@ -1,12 +1,13 @@
 import express from "express";
-import multer from "multer";
 
 import { authentication } from "../middleware/authentication.js";
 import requireVerifiedWithSubscription from "../middleware/requireVerifiedWithSubscription.js";
+import { upload, uploadErrorHandler } from "../middleware/uploadMiddleware.js";
 
 import {
   createProject,
   uploadProjectMedia,
+  getSkillSuggestions,
   assignFreelancer,
   applyForProject,
   approveOrRejectApplication,
@@ -27,6 +28,8 @@ import {
   getProjectDeliveries,
   adminApproveProject,
   requestProjectChanges,
+  getProjectChangeRequests,
+  markProjectChangeRequestsAsRead,
 } from "../controller/projectsManagment/projects.js";
 
 import {
@@ -43,10 +46,10 @@ import {
 } from "../controller/projectsManagment/projectsFiltering.js";
 
 import {getAssignmentsForProject} from "../controller/projectsManagment/assignments.js";
-
+import validateRequest from "../middleware/validateRequest.js";
+import { createProjectValidator } from "../middleware/validators/projectValidators.js";
 
 const projectsRouter = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
 /* ======================================================================
    1) CREATE + MY PROJECTS
@@ -55,7 +58,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 projectsRouter.post(
   "/",
   authentication,
-  uploadProjectMedia, 
+  uploadProjectMedia,
+  createProjectValidator,
+  validateRequest,
   createProject
 );
 
@@ -69,6 +74,9 @@ projectsRouter.post(
 // );
 
 projectsRouter.get("/myprojects", authentication, getProjectsByUserRole);
+
+/* Skills suggestions for Preferred Skills (from previous projects, no auth) */
+projectsRouter.get("/skills-suggestions", getSkillSuggestions);
 
 /* --------------------------------
    DELETE (SOFT DELETE) PROJECT BY OWNER
@@ -283,9 +291,27 @@ projectsRouter.post(
   adminApproveProject
 );
 
+projectsRouter.get(
+  "/:projectId/change-requests",
+  authentication,
+  getProjectChangeRequests
+);
+
+projectsRouter.put(
+  "/:projectId/change-requests/mark-read",
+  authentication,
+  markProjectChangeRequestsAsRead
+);
+
 projectsRouter.post(
   "/:projectId/request-changes",
   authentication,
   requestProjectChanges
 );
+
+/* GET single project by ID (must be after all other /:projectId and literal routes) */
+projectsRouter.get("/:projectId", authentication, getProjectById);
+
+projectsRouter.use(uploadErrorHandler);
+
 export default projectsRouter;

@@ -187,15 +187,27 @@ export const subscribeToPlan = async (req, res) => {
   const { plan_id } = req.body;
 
   try {
+    // Check if user already has an active or pending_start subscription
     const { rows: existing } = await pool.query(
-      `SELECT 1 FROM subscriptions WHERE freelancer_id = $1 AND status = 'active'`,
+      `SELECT id, status, end_date, start_date 
+       FROM subscriptions 
+       WHERE freelancer_id = $1 
+         AND status IN ('active', 'pending_start')
+         AND (end_date > NOW() OR start_date > NOW())
+       LIMIT 1`,
       [freelancerId]
     );
-    if (existing.length)
+    if (existing.length) {
+      const existingSub = existing[0];
+      const expirationDate = existingSub.end_date 
+        ? new Date(existingSub.end_date).toLocaleDateString()
+        : new Date(existingSub.start_date).toLocaleDateString();
+      
       return res.status(400).json({
         success: false,
-        message: "Already subscribed to an active plan.",
+        message: `You already have an active or upcoming subscription. You cannot change plans until it expires.${existingSub.end_date ? ` Current subscription expires on ${expirationDate}.` : ''}`,
       });
+    }
 
     const { rows: planRows } = await pool.query(
       "SELECT duration FROM plans WHERE id = $1",

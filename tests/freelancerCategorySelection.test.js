@@ -6,7 +6,7 @@ const testUserData = {
   role_id: 3, // Freelancer
   first_name: "John",
   last_name: "Doe",
-  email: "john.doe.test@example.com",
+  email: "info@battechno.com",
   password: "TestPass123",
   phone_number: "+1234567890",
   country: "USA",
@@ -35,7 +35,7 @@ describe('Freelancer Category Selection', () => {
   test('should reject more than 3 sub-categories', async () => {
     const userDataWithTooManySubCategories = {
       ...testUserData,
-      email: "john.doe.test2@example.com",
+      email: "info@battechno.com",
       username: "johndoetest2",
       sub_category_ids: [1, 2, 3, 4, 5] // More than 3
     };

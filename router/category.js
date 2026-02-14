@@ -23,6 +23,7 @@ import {
 
   //  NEWLY ADDED CONTROLLER
   getSubSubCategoriesByCategoryId,
+  getAllSubSubCategories,
 } from "../controller/category.js";
 
 const categoryRouter = express.Router();
@@ -32,6 +33,7 @@ const categoryRouter = express.Router();
 ===================================================== */
 
 categoryRouter.get("/", getCategories);
+categoryRouter.get("/all-sub-sub-categories", getAllSubSubCategories);
 categoryRouter.get("/:categoryId/sub-categories", getSubCategories);
 categoryRouter.get(
   "/sub-category/:subCategoryId/sub-sub-categories",

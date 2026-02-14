@@ -132,11 +132,22 @@ PORT=5000
 NODE_ENV=development
 DATABASE_URL=postgresql://username:password@localhost:5432/orderzhouse
 JWT_SECRET=your-super-secret-jwt-key
+REFRESH_TOKEN_SECRET=your-refresh-token-secret
+REFRESH_TOKEN_EXPIRES_DAYS=30
 GOOGLE_CLIENT_ID=your-google-oauth-client-id
 GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
 CLOUDINARY_CLOUD_NAME=your-cloudinary-cloud-name
 CLOUDINARY_API_KEY=your-cloudinary-api-key
 CLOUDINARY_API_SECRET=your-cloudinary-api-secret
+
+# Password reset & email (optional; if not set, reset link is logged in dev)
+FRONTEND_URL=http://localhost:5173
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+EMAIL_USER=your-smtp-user
+EMAIL_PASS=your-smtp-password
+EMAIL_FROM=noreply@orderzhouse.com
 ```
 
 ## Database Schema

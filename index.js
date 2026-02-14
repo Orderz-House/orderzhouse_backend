@@ -1,4 +1,6 @@
 import express from "express";
+import rateLimit from "express-rate-limit";
+import cookieParser from "cookie-parser";
 import "./models/db.js";
 import cors from "cors";
 import http from "http";
@@ -11,18 +13,40 @@ import "./cron/expireSubscriptions.js";
 import "./cron/autoExpireOldOffers.js";
 import { startDeadlineWatcher } from "./cron/realTimeDeadlineWatcher.js";
 import { cleanupDeactivatedUsers } from "./cron/cleanupDeactivatedUsers.js";
+import { registerTenderVaultRotationJobs } from "./cron/tenderVaultRotation.js";
 import liveScreenRoutes from "./router/LiveScreen.js";
 
 dotenv.config();
 
+// Check email configuration (dev only)
+if (process.env.NODE_ENV !== "test" && process.env.NODE_ENV !== "production") {
+  const hasEmailConfig = !!(
+    process.env.SMTP_HOST &&
+    process.env.SMTP_PORT &&
+    process.env.EMAIL_USER &&
+    process.env.EMAIL_PASS &&
+    (process.env.EMAIL_FROM || process.env.EMAIL_USER)
+  );
+  console.log(`📧 SMTP configured: ${hasEmailConfig ? "✅ YES" : "❌ NO"}`);
+  if (!hasEmailConfig) {
+    console.warn("⚠️  Email OTP verification will fail without SMTP configuration");
+    console.warn("   Required: SMTP_HOST, SMTP_PORT, EMAIL_USER, EMAIL_PASS, EMAIL_FROM (optional)");
+  }
+}
+
 // Start real-time deadline watcher
 startDeadlineWatcher();
 
-// Cleanup deactivated users every 20 mins
+// delete permanently after 30 days
 cron.schedule("*/20 * * * *", async () => {
-  console.log("Running cleanupDeactivatedUsers cron job...");
+console.log("Running cleanupDeactivatedUsers cron job...");
   await cleanupDeactivatedUsers();
 });
+
+// Register Tender Vault Rotation System cron jobs
+registerTenderVaultRotationJobs();
+
+
 
 // Routers
 import SubscriptionRouter from "./router/subscription.js";
@@ -30,7 +54,7 @@ import CoursesRouter from "./router/course.js";
 import assignmentsRouter from "./router/assignments.js";
 import VerificationRouter from "./router/verification.js";
 import paymentsRoutes from "./router/payments.js";
-import AdminUser from "./router/adminUser.js";
+import AdminUser from "./router/adminUser.js"
 import tasksRouter from "./router/tasks.js";
 import usersRouter from "./router/user.js";
 import plansRouter from "./router/plans.js";
@@ -41,50 +65,112 @@ import notificationsRouter from "./router/notifications.js";
 import authRouter from "./router/auth.js";
 import offersRouter from "./router/offers.js";
 import ratingsRouter from "./router/rating.js";
-import Blogsrouter from "./router/blogs.js";
+import Blogsrouter from "./router/blogs.js"
 import freelancerCategoriesRouter from "./router/freelancerCategories.js";
 import subscriptionsRoutes from "./router/subscription.js";
+//import analyticsRoutes from "./router/analytics.js";
 import emailVerificationRoutes from "./router/emailVerification.js";
 import chatsRouter from "./router/chats.js";
 import StripeRouter from "./router/Stripe/stripe.js";
 import webhookRouter from "./router/Stripe/stripeWebhook.js";
+import searchRouter from "./router/search.js";
+import referralsRouter from "./router/referrals.js";
+import tenderVaultRouter from "./router/tenderVault.js";
 
-// DB connection already imported above
+
+// DB connection
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000; // Use Hostinger PORT
+const PORT = process.env.NODE_ENV === "test" ? 0 : process.env.PORT || 5000;
 
-// Stripe webhook (needs raw body)
+if (process.env.NODE_ENV !== "test") {
+  app.set("trust proxy", 1);
+  
+}
+
+//stripe webhook needs the raw body
 app.use("/stripe", webhookRouter);
 
-// Body parser
 app.use(express.json());
+app.use(cookieParser());
 
-// CORS
 app.use(cors({
   origin: [
     "https://orderzhouse.com",
     "http://localhost:5173",
-    "http://localhost:5174",
-    "https://darkgoldenrod-quail-976616.hostingersite.com"
+    "http://localhost:5174"
   ],
   credentials: true,
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Requested-With']
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Health endpoint
-app.get("/health", (req, res) => res.send("OK"));
+// Global rate limiter for all API routes (does not apply to /stripe webhook mounted above)
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests, please try again later." },
+});
+app.use(globalLimiter);
+
+// Stricter limiter for auth endpoints (environment-aware)
+const isDevelopment = process.env.NODE_ENV === "development";
+const authMaxRequests = isDevelopment ? 1000 : 5;
+
+// Log rate limit configuration on startup
+console.log(`🔒 Auth Rate Limiter: ${authMaxRequests} requests per 15 minutes (${isDevelopment ? "DEVELOPMENT" : "PRODUCTION"} mode)`);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: authMaxRequests,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many login/register attempts, please try later." },
+  // Skip rate limiting in development if needed (uncomment if still having issues)
+  // skip: (req) => isDevelopment,
+});
+app.use("/users/login", authLimiter);
+app.use("/users/register", authLimiter);
+
+// Stricter limiter for password reset (do not leak email existence)
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many password reset attempts. Please try again later." },
+});
+app.use("/users/forgot-password", passwordResetLimiter);
+app.use("/users/reset-password", passwordResetLimiter);
+
+// ============================================================
+// 🧪 TEMP TEST ROUTES - Direct in index.js (MUST BE FIRST!)
+// ============================================================
+
+app.get("/payments/history", (req, res) => {
+  console.log("✅ TEMP /payments/history route HIT!");
+  res.json({
+    success: true,
+    message: "TEMP payments/history working!",
+    data: { items: [], page: 1, limit: 50, type: "all" },
+  });
+});
+// ============================================================
 
 // Routers
+//APPOINTMENTS
 app.use("/assignments", assignmentsRouter);
 app.use("/verification", VerificationRouter);
 app.use("/freelancerCategories", freelancerCategoriesRouter);
-app.use("/blogs", Blogsrouter);
-app.use("/admUser", AdminUser);
-app.use("/category", categoriesRouter);
+app.use("/blogs", Blogsrouter)
+app.use("/admUser" , AdminUser)
+app.use("/category" , categoriesRouter);
 app.use("/tasks", tasksRouter);
 app.use("/offers", offersRouter);
+//app.use("/analytics", analyticsRoutes);
 app.use("/projects", projectsRouter);
 app.use("/users", usersRouter);
 app.use("/plans", plansRouter);
@@ -100,6 +186,9 @@ app.use("/payments", paymentsRoutes);
 app.use("/chat", chatsRouter);
 app.use("/api", liveScreenRoutes);
 app.use("/stripe", StripeRouter);
+app.use("/search", searchRouter);
+app.use("/referrals", referralsRouter);
+app.use("/tender-vault", tenderVaultRouter);
 
 let server, io;
 
@@ -111,7 +200,9 @@ if (process.env.NODE_ENV !== "test") {
   const startServer = (portToUse) => {
     server.once("error", (err) => {
       if (err && err.code === "EADDRINUSE") {
-        console.error(`⚠️ Port ${portToUse} in use. Retrying with a random free port...`);
+        console.error(
+          `⚠️ Port ${portToUse} in use. Retrying with a random free port...`
+        );
         server.close(() => startServer(0));
         return;
       }
@@ -121,13 +212,17 @@ if (process.env.NODE_ENV !== "test") {
     server.listen(portToUse, () => {
       const addressInfo = server.address();
       const boundPort =
-        typeof addressInfo === "object" && addressInfo ? addressInfo.port : portToUse;
+        typeof addressInfo === "object" && addressInfo
+          ? addressInfo.port
+          : portToUse;
+
       console.log(`✅ Server listening at http://localhost:${boundPort}`);
     });
   };
 
   startServer(PORT);
 } else {
+  // For tests, create minimal server without socket.io
   server = http.createServer(app);
   io = null;
 }

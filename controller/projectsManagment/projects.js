@@ -2,12 +2,8 @@ import pool from "../../models/db.js";
 import { LogCreators, ACTION_TYPES } from "../../services/loggingService.js";
 import cloudinary from "../../cloudinary/setupfile.js";
 import { Readable } from "stream";
-import multer from "multer";
+import { upload } from "../../middleware/uploadMiddleware.js";
 import eventBus from "../../events/eventBus.js";
-
-// Multer memory storage
-const storage = multer.memoryStorage();
-export const upload = multer({ storage });
 
 /**
  * Upload fields for cover + project files (if sent as form-data)
@@ -40,6 +36,21 @@ export const createProject = async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = req.token?.userId;
+    
+    // Check if user is client (role_id = 2) and get can_post_without_payment
+    const { rows: userRows } = await pool.query(
+      `SELECT role_id, can_post_without_payment FROM users WHERE id = $1 AND is_deleted = false`,
+      [userId]
+    );
+    
+    if (!userRows.length || Number(userRows[0].role_id) !== 2) {
+      return res.status(403).json({
+        success: false,
+        message: "Only clients can create projects",
+      });
+    }
+
+    const canPostWithoutPayment = userRows[0]?.can_post_without_payment === true;
 
     await client.query("SELECT pg_advisory_xact_lock($1)", [userId]);
 
@@ -111,11 +122,19 @@ export const createProject = async (req, res) => {
       });
     }
 
+    // Set project status - for skip-payment users, ensure it's 'active' to appear in listings
     let projectStatus;
     if (project_type === "bidding") {
       projectStatus = "bidding";
     } else {
+      // For fixed/hourly projects, always set to 'active' so they appear in listings
+      // This applies to both paid and skip-payment users
       projectStatus = "active";
+    }
+
+    // Debug: Log status for skip-payment users
+    if (canPostWithoutPayment) {
+      console.log(`[createProject] Skip-payment user ${userId} creating project with status: ${projectStatus}, project_type: ${project_type}`);
     }
 
     const durationDaysValue =
@@ -135,6 +154,36 @@ export const createProject = async (req, res) => {
 
     const normalizedHourlyRate =
       project_type === "hourly" ? Number(hourly_rate) : null;
+
+    // ------------ Step 0: Check for duplicate submission (within last 10 seconds) ------------
+    const duplicateCheckQuery = `
+      SELECT id, title, created_at
+      FROM projects
+      WHERE user_id = $1
+        AND title = $2
+        AND created_at > NOW() - INTERVAL '10 seconds'
+        AND is_deleted = false
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+
+    const { rows: duplicateRows } = await client.query(duplicateCheckQuery, [
+      userId,
+      title.trim(),
+    ]);
+
+    if (duplicateRows.length > 0) {
+      const duplicateProject = duplicateRows[0];
+      console.log(`[createProject] Duplicate submission detected for user ${userId}, returning existing project ${duplicateProject.id}`);
+      
+      // Return existing project instead of creating duplicate
+      return res.status(200).json({
+        success: true,
+        project: duplicateProject,
+        message: "Project already created (duplicate submission prevented)",
+        isDuplicate: true,
+      });
+    }
 
     // ------------ Step 1: Insert project ------------
     const insertQuery = `
@@ -208,6 +257,18 @@ export const createProject = async (req, res) => {
       console.error("Error emitting project.created:", err);
     }
 
+    // Debug: Log final project state for skip-payment users
+    if (canPostWithoutPayment) {
+      console.log(`[createProject] Skip-payment project created:`, {
+        id: project.id,
+        title: project.title,
+        status: project.status,
+        project_type: project.project_type,
+        is_deleted: project.is_deleted,
+        user_id: project.user_id,
+      });
+    }
+
     return res.status(201).json({ success: true, project });
   } catch (error) {
     console.error("createProject error:", error);
@@ -217,6 +278,63 @@ export const createProject = async (req, res) => {
   }
 };
 
+/**
+ * GET /projects/skills-suggestions?q=...
+ * Returns skills used in previous projects: normalized (no duplicate wording), with count.
+ * Used for autocomplete in Preferred Skills; optional q filters by prefix.
+ */
+export const getSkillSuggestions = async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim().toLowerCase();
+    const limit = Math.min(Number(req.query.limit) || 15, 30);
+
+    const { rows } = await pool.query(
+      `SELECT preferred_skills FROM projects WHERE preferred_skills IS NOT NULL AND is_deleted = false`
+    );
+
+    const countByNormalized = new Map();
+    const displayByNormalized = new Map();
+
+    for (const row of rows) {
+      let arr = row.preferred_skills;
+      if (typeof arr === "string") {
+        try {
+          arr = JSON.parse(arr);
+        } catch {
+          continue;
+        }
+      }
+      if (!Array.isArray(arr)) continue;
+      for (const s of arr) {
+        const raw = typeof s === "string" ? s.trim() : String(s).trim();
+        if (!raw) continue;
+        const normalized = raw.toLowerCase();
+        countByNormalized.set(normalized, (countByNormalized.get(normalized) || 0) + 1);
+        if (!displayByNormalized.has(normalized) || raw.length < (displayByNormalized.get(normalized)?.length ?? 999)) {
+          displayByNormalized.set(normalized, raw);
+        }
+      }
+    }
+
+    let list = [...countByNormalized.entries()]
+      .map(([norm, count]) => ({ skill: displayByNormalized.get(norm) || norm, normalized: norm, count }))
+      .filter((item) => !q || item.normalized.includes(q))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+
+    const total = list.reduce((s, i) => s + i.count, 0);
+    const suggestions = list.map(({ skill, count }) => ({
+      skill,
+      count,
+      percentage: total > 0 ? Math.round((count / total) * 100) : 0,
+    }));
+
+    return res.json({ success: true, suggestions });
+  } catch (error) {
+    console.error("getSkillSuggestions error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
 
 // Admin approve project after payment
 
@@ -597,7 +715,40 @@ export const approveOrRejectApplication = async (req, res) => {
   WHERE id = $1
 `, [assignment.project_id]);
 
+    // B) Create escrow when freelancer starts working (if not already created)
+    const paymentResult = await client.query(
+      `SELECT id, amount FROM payments 
+       WHERE reference_id = $1 AND purpose = 'project' AND status = 'paid' 
+       ORDER BY created_at DESC LIMIT 1`,
+      [assignment.project_id]
+    );
+    
+    if (paymentResult.rows.length > 0) {
+      const paymentId = paymentResult.rows[0].id;
+      const amount = paymentResult.rows[0].amount;
+      const projectResult = await client.query(
+        `SELECT user_id AS client_id FROM projects WHERE id = $1`,
+        [assignment.project_id]
+      );
+      
+      if (projectResult.rows.length > 0) {
+        const clientId = projectResult.rows[0].client_id;
+        const { createEscrowHeld } = await import("../../services/escrowService.js");
+        await createEscrowHeld({
+          projectId: assignment.project_id,
+          clientId,
+          freelancerId: assignment.freelancer_id,
+          amount,
+          paymentId,
+        }, client);
+      }
+    }
+
     await client.query("COMMIT");
+    client.release();
+
+    // Activate subscription if pending (after transaction commit)
+    await activateSubscriptionIfPending(assignment.freelancer_id);
 
     // ✅ emit events
     try {
@@ -660,6 +811,38 @@ export const acceptAssignment = async (req, res) => {
        WHERE id = $1`,
       [assignment.project_id]
     );
+
+    // B) Create escrow when freelancer starts working (if not already created)
+    const paymentResult = await pool.query(
+      `SELECT id, amount FROM payments 
+       WHERE reference_id = $1 AND purpose = 'project' AND status = 'paid' 
+       ORDER BY created_at DESC LIMIT 1`,
+      [assignment.project_id]
+    );
+    
+    if (paymentResult.rows.length > 0) {
+      const paymentId = paymentResult.rows[0].id;
+      const amount = paymentResult.rows[0].amount;
+      const projectResult = await pool.query(
+        `SELECT user_id AS client_id FROM projects WHERE id = $1`,
+        [assignment.project_id]
+      );
+      
+      if (projectResult.rows.length > 0) {
+        const clientId = projectResult.rows[0].client_id;
+        const { createEscrowHeld } = await import("../../services/escrowService.js");
+        await createEscrowHeld({
+          projectId: assignment.project_id,
+          clientId,
+          freelancerId,
+          amount,
+          paymentId,
+        });
+      }
+    }
+
+    // Activate subscription if pending
+    await activateSubscriptionIfPending(freelancerId);
 
     await LogCreators.projectOperation(
       freelancerId,
@@ -779,9 +962,9 @@ export const approveWorkCompletion = async (req, res) => {
       });
     }
 
-    // 1) Load project
+    // 1) Load project with completion status
     const { rows } = await pool.query(
-      `SELECT id, user_id, title
+      `SELECT id, user_id, title, status, completion_status
        FROM projects
        WHERE id = $1 AND is_deleted = false`,
       [projectId]
@@ -804,17 +987,42 @@ export const approveWorkCompletion = async (req, res) => {
       });
     }
 
+    // 3) Validate that work was delivered before allowing approve
+    if (action === "approve") {
+      if (project.status !== "pending_review" && project.completion_status !== "pending_review") {
+        return res.status(400).json({
+          success: false,
+          message: "Work must be submitted for review before it can be approved",
+        });
+      }
+    }
+
     const newStatus =
       action === "approve" ? "completed" : "revision_requested";
 
-    // 3) Update ONLY the column you have
+    // 3) Update BOTH status fields to ensure UI consistency
     await pool.query(
       `UPDATE projects
-       SET completion_status = $1,
+       SET status = $1,
+           completion_status = $1,
            updated_at = NOW()
        WHERE id = $2`,
       [newStatus, projectId]
     );
+
+    // C) Release escrow and credit freelancer wallet when project is completed
+    if (action === "approve" && newStatus === "completed") {
+      const { releaseEscrowToFreelancer } = await import("../../services/escrowService.js");
+      try {
+        const releaseResult = await releaseEscrowToFreelancer(projectId);
+        if (releaseResult.released) {
+          console.log(`✅ Escrow released for project ${projectId}: ${releaseResult.amount} credited to freelancer ${releaseResult.freelancerId}`);
+        }
+      } catch (escrowError) {
+        console.error("[approveWorkCompletion] Escrow release error:", escrowError);
+        // Don't fail approval if escrow release fails - log and continue
+      }
+    }
 
     // 4) Optional notification (safe)
     try {
@@ -1698,6 +1906,96 @@ export const getProjectDeliveries = async (req, res) => {
   }
 };
 
+/// Get change requests for a project (freelancer)
+/// GET /projects/:projectId/change-requests
+export const getProjectChangeRequests = async (req, res) => {
+  const requesterId = req.token?.userId;
+  const { projectId } = req.params;
+
+  if (!requesterId) return res.status(401).json({ success: false, message: "Unauthorized" });
+  if (!projectId) return res.status(400).json({ success: false, message: "Missing projectId" });
+
+  try {
+    // Check if project exists
+    const { rows: pr } = await pool.query(
+      `SELECT id, user_id AS client_id
+         FROM projects
+        WHERE id = $1 AND is_deleted = false`,
+      [projectId]
+    );
+    if (!pr.length) {
+      return res.status(404).json({ success: false, message: "Project not found" });
+    }
+
+    // Get active freelancer assignment
+    const { rows: ar } = await pool.query(
+      `SELECT freelancer_id
+         FROM project_assignments
+        WHERE project_id = $1 AND status = 'active'`,
+      [projectId]
+    );
+
+    if (!ar.length) {
+      // No active assignment - return empty list
+      return res.status(200).json({ success: true, requests: [] });
+    }
+
+    const freelancerId = ar[0].freelancer_id;
+
+    // Check if requester is the assigned freelancer or the client owner
+    const isFreelancer = String(requesterId) === String(freelancerId);
+    const isClient = String(requesterId) === String(pr[0].client_id);
+
+    if (!isFreelancer && !isClient) {
+      return res.status(403).json({ success: false, message: "Not authorized" });
+    }
+
+    // Get change requests for this project and freelancer
+    const { rows } = await pool.query(
+      `SELECT 
+         id,
+         project_id,
+         client_id,
+         freelancer_id,
+         message,
+         is_resolved,
+         created_at
+       FROM project_change_requests
+       WHERE project_id = $1 AND freelancer_id = $2
+       ORDER BY created_at DESC`,
+      [projectId, freelancerId]
+    );
+
+    return res.status(200).json({ success: true, requests: rows || [] });
+  } catch (err) {
+    console.error("getProjectChangeRequests error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+/// Mark all change requests for a project as read (resolved) for the current freelancer
+/// PUT /projects/:projectId/change-requests/mark-read
+export const markProjectChangeRequestsAsRead = async (req, res) => {
+  const freelancerId = req.token?.userId;
+  const { projectId } = req.params;
+
+  if (!freelancerId) return res.status(401).json({ success: false, message: "Unauthorized" });
+  if (!projectId) return res.status(400).json({ success: false, message: "Missing projectId" });
+
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE project_change_requests
+       SET is_resolved = true
+       WHERE project_id = $1 AND freelancer_id = $2 AND is_resolved = false`,
+      [projectId, freelancerId]
+    );
+    return res.status(200).json({ success: true, marked: rowCount || 0 });
+  } catch (err) {
+    console.error("markProjectChangeRequestsAsRead error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 export const requestProjectChanges = async (req, res) => {
   const clientId = req.token?.userId;
   const { projectId } = req.params;
@@ -1726,7 +2024,7 @@ export const requestProjectChanges = async (req, res) => {
     const { rows: ar } = await pool.query(
       `SELECT freelancer_id
          FROM project_assignments
-        WHERE project_id = $1 AND status = 'active'
+         WHERE project_id = $1 AND status = 'active'
         `,
       [projectId]
     );

@@ -14,10 +14,11 @@ import {
 import { authentication } from "../middleware/authentication.js";
 import adminOnly from "../middleware/adminOnly.js";
 import requireVerifiedWithSubscription from "../middleware/requireVerifiedWithSubscription.js";
+import freelancerOnly from "../middleware/freelancerOnly.js";
 
 const plansRouter = express.Router();
 
-
+// Public route for viewing plans (pricing page)
 plansRouter.get("/", getPlans);
 
 

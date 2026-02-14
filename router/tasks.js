@@ -1,6 +1,5 @@
 // routes/tasks.js
 import express from "express";
-import multer from "multer";
 import {
   getAllTasksForAdmin,
   approveTaskByAdmin,
@@ -25,9 +24,9 @@ import {
   getAssignedTasks,
 } from "../controller/tasks.js";
 import authentication from "../middleware/authentication.js";
+import { upload, uploadErrorHandler } from "../middleware/uploadMiddleware.js";
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
 /* ============================== ADMIN ============================== */
 router.get("/admin", authentication, getAllTasksForAdmin);
@@ -57,5 +56,7 @@ router.get("/pool", getTaskPool);
 router.get("/categories", getCategories);
 router.get("/:id", getTaskById);
 router.post("/files/:id", authentication, upload.array("files"), addTaskFiles);
+
+router.use(uploadErrorHandler);
 
 export default router;

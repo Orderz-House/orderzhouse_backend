@@ -12,12 +12,26 @@ import {
   createEscrow,
   releaseEscrow,
   refundEscrow,
+
+  // UNIFIED
+  getPaymentHistory,
 } from "../controller/payments.js";
 
 import authentication from "../middleware/authentication.js";
 import adminOnly from "../middleware/adminOnly.js";
 
 const PaymentsRouter = express.Router();
+
+/* =====================================================
+   UNIFIED (All roles)
+===================================================== */
+
+// Unified payment history (all transactions)
+PaymentsRouter.get(
+  "/history",
+  authentication,
+  getPaymentHistory
+);
 
 /* =====================================================
    CLIENT (role_id = 2)

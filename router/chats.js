@@ -5,6 +5,8 @@ import {
   createMessage,
   getAllChatsForAdmin,
   getUserChats,
+  getUnreadCountByProjectId,
+  markProjectChatAsRead,
 } from "../controller/chats.js";
 import { authentication } from "../middleware/authentication.js";
 
@@ -15,6 +17,8 @@ chatsRouter.get("/user-chats", authentication, getUserChats);
 
 // Project chat
 chatsRouter.get("/project/:projectId/messages", authentication, getMessagesByProjectId);
+chatsRouter.get("/project/:projectId/unread", authentication, getUnreadCountByProjectId);
+chatsRouter.post("/project/:projectId/read", authentication, markProjectChatAsRead);
 
 // Task chat
 chatsRouter.get("/task/:taskId/messages", authentication, getMessagesByTaskId);

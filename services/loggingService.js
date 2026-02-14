@@ -23,6 +23,8 @@ export const ACTION_TYPES = {
   USER_UPDATE: 'user_update',
   USER_DELETE: 'user_delete',
   USER_VERIFY: 'user_verify',
+  PASSWORD_CHANGE: 'password_change',
+  PASSWORD_RESET: 'password_reset',
   
   // Project actions
   PROJECT_CREATE: 'project_create',

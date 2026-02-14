@@ -235,3 +235,53 @@ export const getAllChatsForAdmin = async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error", error: err.message });
   }
 };
+
+/** GET /chat/project/:projectId/unread — unread count for current user (client + freelancer) */
+export const getUnreadCountByProjectId = async (req, res) => {
+  const { projectId } = req.params;
+  const userId = req.token?.userId;
+  if (!userId) return res.status(401).json({ success: false, message: "Authentication required" });
+  try {
+    if (!(await isAdmin(userId))) {
+      const participants = await getProjectParticipants(projectId);
+      if (!participants.includes(userId)) return res.status(403).json({ success: false, message: "Access denied" });
+    }
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM messages m
+       WHERE m.project_id = $1 AND m.time_sent > COALESCE(
+         (SELECT pcr.last_read_at FROM project_chat_read pcr WHERE pcr.user_id = $2 AND pcr.project_id = $1),
+         '1970-01-01'::timestamptz
+       )`,
+      [projectId, userId]
+    );
+    const count = rows[0]?.count ?? 0;
+    return res.status(200).json({ success: true, count, hasUnread: count > 0 });
+  } catch (err) {
+    if (err.code === "42P01") return res.status(200).json({ success: true, count: 0, hasUnread: false });
+    console.error("❌ Error in getUnreadCountByProjectId:", err.message);
+    return res.status(500).json({ success: false, message: "Server error", count: 0 });
+  }
+};
+
+/** POST /chat/project/:projectId/read — mark project chat as read for current user */
+export const markProjectChatAsRead = async (req, res) => {
+  const { projectId } = req.params;
+  const userId = req.token?.userId;
+  if (!userId) return res.status(401).json({ success: false, message: "Authentication required" });
+  try {
+    if (!(await isAdmin(userId))) {
+      const participants = await getProjectParticipants(projectId);
+      if (!participants.includes(userId)) return res.status(403).json({ success: false, message: "Access denied" });
+    }
+    await pool.query(
+      `INSERT INTO project_chat_read (user_id, project_id, last_read_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id, project_id) DO UPDATE SET last_read_at = NOW()`,
+      [userId, projectId]
+    );
+    return res.status(200).json({ success: true, message: "Marked as read" });
+  } catch (err) {
+    if (err.code === "42P01") return res.status(200).json({ success: true, message: "Marked as read" });
+    console.error("❌ Error in markProjectChatAsRead:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};

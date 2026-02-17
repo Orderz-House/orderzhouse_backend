@@ -2,6 +2,7 @@ import pool from "../../models/db.js";
 
 /**
  * Shared filter based on type/status
+ * Excludes projects with pending/rejected admin approval for offline payments
  */
 const buildStatusCondition = () => {
   return `
@@ -9,6 +10,11 @@ const buildStatusCondition = () => {
     AND (
       (p.project_type IN ('fixed', 'hourly') AND p.status = 'active')
       OR (p.status = 'bidding')
+    )
+    AND (
+      p.admin_approval_status = 'none'
+      OR p.admin_approval_status = 'approved'
+      OR p.admin_approval_status IS NULL
     )
   `;
 };

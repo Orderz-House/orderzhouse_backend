@@ -2,6 +2,8 @@ import express from "express";
 import {
   // CLIENT
   getClientPayments,
+  getClientTotalSpent,
+  getClientEscrowSummary,
 
   // FREELANCER
   getFreelancerWallet,
@@ -42,6 +44,20 @@ PaymentsRouter.get(
   "/client/history",
   authentication,
   getClientPayments
+);
+
+// Client total spent (from payments table)
+PaymentsRouter.get(
+  "/client/total-spent",
+  authentication,
+  getClientTotalSpent
+);
+
+// Client escrow summary (financial overview)
+PaymentsRouter.get(
+  "/client/escrow/summary",
+  authentication,
+  getClientEscrowSummary
 );
 
 /* =====================================================

@@ -47,6 +47,87 @@ export const getClientPayments = async (req, res) => {
 };
 
 /* ============================================================
+   1️⃣ CLIENT – TOTAL SPENT (From Payments Table)
+============================================================ */
+export const getClientTotalSpent = async (req, res) => {
+  try {
+    requireRole(req, 2);
+
+    const userId = req.token.userId;
+
+    // Get total spent from payments table (only paid status)
+    const { rows } = await pool.query(
+      `
+      SELECT COALESCE(SUM(amount), 0) AS total_spent
+      FROM payments
+      WHERE user_id = $1
+        AND status = 'paid'
+      `,
+      [userId]
+    );
+
+    const totalSpent = Number(rows[0]?.total_spent || 0);
+
+    res.json({ success: true, totalSpent });
+
+  } catch (err) {
+    console.error("getClientTotalSpent:", err);
+    res.status(403).json({ success: false, message: err.message });
+  }
+};
+
+/* ============================================================
+   1️⃣ CLIENT – ESCROW SUMMARY (Financial Overview)
+============================================================ */
+export const getClientEscrowSummary = async (req, res) => {
+  try {
+    requireRole(req, 2);
+
+    const userId = req.token.userId;
+
+    // Get escrow summary: held, released, refunded
+    const { rows } = await pool.query(
+      `
+      SELECT
+        status,
+        COALESCE(SUM(amount), 0) AS total_amount,
+        COUNT(*) AS count
+      FROM escrow
+      WHERE client_id = $1
+      GROUP BY status
+      `,
+      [userId]
+    );
+
+    // Calculate totals by status
+    const summary = {
+      held: 0,
+      released: 0,
+      refunded: 0,
+    };
+
+    rows.forEach((row) => {
+      const status = String(row.status || "").toLowerCase();
+      const amount = Number(row.total_amount || 0);
+      
+      if (status === "held") {
+        summary.held = amount;
+      } else if (status === "released") {
+        summary.released = amount;
+      } else if (status === "refunded") {
+        summary.refunded = amount;
+      }
+    });
+
+    res.json({ success: true, summary });
+
+  } catch (err) {
+    console.error("getClientEscrowSummary:", err);
+    res.status(403).json({ success: false, message: err.message });
+  }
+};
+
+/* ============================================================
    2️⃣ FREELANCER – WALLET BALANCE
 ============================================================ */
 export const getFreelancerWallet = async (req, res) => {

@@ -18,20 +18,11 @@ import liveScreenRoutes from "./router/LiveScreen.js";
 
 dotenv.config();
 
-// Check email configuration (dev only)
-if (process.env.NODE_ENV !== "test" && process.env.NODE_ENV !== "production") {
-  const hasEmailConfig = !!(
-    process.env.SMTP_HOST &&
-    process.env.SMTP_PORT &&
-    process.env.EMAIL_USER &&
-    process.env.EMAIL_PASS &&
-    (process.env.EMAIL_FROM || process.env.EMAIL_USER)
-  );
-  console.log(`📧 SMTP configured: ${hasEmailConfig ? "✅ YES" : "❌ NO"}`);
-  if (!hasEmailConfig) {
-    console.warn("⚠️  Email OTP verification will fail without SMTP configuration");
-    console.warn("   Required: SMTP_HOST, SMTP_PORT, EMAIL_USER, EMAIL_PASS, EMAIL_FROM (optional)");
-  }
+// Check email configuration (Resend) so OTP works everywhere
+const hasEmailConfig = !!(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+console.log(`📧 Email configured: ${hasEmailConfig ? "✅ YES (Resend API key and EMAIL_FROM set)" : "❌ NO (OTP emails will fail)"}`);
+if (!hasEmailConfig) {
+  console.warn("⚠️  Set RESEND_API_KEY and EMAIL_FROM for OTP emails to work.");
 }
 
 // Start real-time deadline watcher
@@ -89,21 +80,43 @@ if (process.env.NODE_ENV !== "test") {
   
 }
 
-//stripe webhook needs the raw body
+// ✅ Stripe webhook needs the raw body (mounted BEFORE express.json())
+// This ensures the webhook route gets raw body for signature verification
 app.use("/stripe", webhookRouter);
 
 app.use(express.json());
 app.use(cookieParser());
 
+// CORS configuration - supports both local and production
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "https://orderzhouse.com",
+  "https://www.orderzhouse.com",
+  "http://localhost:5173",
+  "http://localhost:5174"
+].filter(Boolean); // Remove undefined values
+
 app.use(cors({
-  origin: [
-    "https://orderzhouse.com",
-    "http://localhost:5173",
-    "http://localhost:5174"
-  ],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      // In development, allow all origins for easier testing
+      if (process.env.NODE_ENV === "development") {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Type', 'Authorization']
 }));
 
 // Global rate limiter for all API routes (does not apply to /stripe webhook mounted above)
@@ -118,7 +131,7 @@ app.use(globalLimiter);
 
 // Stricter limiter for auth endpoints (environment-aware)
 const isDevelopment = process.env.NODE_ENV === "development";
-const authMaxRequests = isDevelopment ? 1000 : 5;
+const authMaxRequests = isDevelopment ? 1000 : 20; // 20 per 15 min: protects from brute force, allows typos/retries
 
 // Log rate limit configuration on startup
 console.log(`🔒 Auth Rate Limiter: ${authMaxRequests} requests per 15 minutes (${isDevelopment ? "DEVELOPMENT" : "PRODUCTION"} mode)`);

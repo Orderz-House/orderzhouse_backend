@@ -53,6 +53,20 @@ export const sendOffer = async (req, res) => {
       });
     }
 
+    // ✅ Enforce subscription restriction (server-side)
+    const { canApplyToProjects } = await import("../utils/subscriptionCheck.js");
+    const subscriptionCheck = await canApplyToProjects(freelancerId);
+    if (!subscriptionCheck.canApply) {
+      return res.status(403).json({
+        success: false,
+        message: subscriptionCheck.reason === "No subscription found"
+          ? "You need an active subscription or pending subscription to submit offers"
+          : subscriptionCheck.reason === "Subscription expired"
+          ? "Your subscription has expired. Please renew to continue submitting offers"
+          : "You cannot submit offers at this time",
+      });
+    }
+
     if (!projectId || bid_amount === null) {
       return res.status(400).json({
         success: false,
@@ -230,19 +244,24 @@ export const completeOfferAcceptance = async (offerId) => {
       );
     }
 
+    let assignmentId = null;
     try {
-      await client.query(
+      const { rows: insertRows } = await client.query(
         `INSERT INTO project_assignments (project_id, freelancer_id, status, assigned_at)
-         VALUES ($1, $2, 'active', NOW())`,
+         VALUES ($1, $2, 'active', NOW())
+         RETURNING id`,
         [offer.project_id, offer.freelancer_id]
       );
+      assignmentId = insertRows[0]?.id || null;
     } catch (assignErr) {
       if (assignErr.code === "23505") {
-        await client.query(
+        const { rows: updateRows } = await client.query(
           `UPDATE project_assignments SET status = 'active', assigned_at = NOW()
-           WHERE project_id = $1 AND freelancer_id = $2`,
+           WHERE project_id = $1 AND freelancer_id = $2
+           RETURNING id`,
           [offer.project_id, offer.freelancer_id]
         );
+        assignmentId = updateRows[0]?.id || null;
       } else throw assignErr;
     }
 
@@ -265,6 +284,14 @@ export const completeOfferAcceptance = async (offerId) => {
       amount: escrowAmount,
       paymentId,
     }, client);
+
+    // ✅ Activate subscription if pending_start and this is first acceptance (within transaction)
+    const { activateSubscriptionOnFirstAcceptance } = await import("../services/subscriptionActivation.js");
+    const subscriptionActivation = await activateSubscriptionOnFirstAcceptance(
+      offer.freelancer_id,
+      client,
+      assignmentId
+    );
 
     try {
       eventBus.emit("offer.statusChanged", {

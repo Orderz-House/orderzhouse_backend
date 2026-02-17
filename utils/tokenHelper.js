@@ -51,13 +51,14 @@ export function verifyRefreshToken(token) {
 
 /**
  * Set httpOnly refresh cookie on res.
+ * In production with cross-domain (frontend ≠ backend), sameSite must be "none" for cookies to work.
  */
 export function setRefreshTokenCookie(res, refreshToken) {
   const isProduction = process.env.NODE_ENV === "production";
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
+    secure: isProduction, // Required when sameSite is "none"
+    sameSite: isProduction ? "none" : "lax", // "none" for cross-domain in production
     path: "/",
     maxAge: getRefreshMaxAgeMs(),
   });
@@ -67,8 +68,11 @@ export function setRefreshTokenCookie(res, refreshToken) {
  * Clear refresh cookie (logout).
  */
 export function clearRefreshTokenCookie(res) {
+  const isProduction = process.env.NODE_ENV === "production";
   res.clearCookie(REFRESH_COOKIE_NAME, {
     httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
     path: "/",
   });
 }

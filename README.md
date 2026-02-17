@@ -140,14 +140,10 @@ CLOUDINARY_CLOUD_NAME=your-cloudinary-cloud-name
 CLOUDINARY_API_KEY=your-cloudinary-api-key
 CLOUDINARY_API_SECRET=your-cloudinary-api-secret
 
-# Password reset & email (optional; if not set, reset link is logged in dev)
+# Email configuration (Resend - required for OTP and email features)
 FRONTEND_URL=http://localhost:5173
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_SECURE=false
-EMAIL_USER=your-smtp-user
-EMAIL_PASS=your-smtp-password
-EMAIL_FROM=noreply@orderzhouse.com
+RESEND_API_KEY=re_YOUR_RESEND_API_KEY
+EMAIL_FROM=no-reply@orderzhouse.com
 ```
 
 ## Database Schema

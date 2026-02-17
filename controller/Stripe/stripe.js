@@ -18,6 +18,15 @@ function getStripe() {
 ============================================================ */
 export const createCheckoutSession = async (req, res) => {
   try {
+    // Feature flag guard: block Stripe if PAYMENTS_MODE !== "stripe"
+    const paymentsMode = process.env.PAYMENTS_MODE || "offline";
+    if (paymentsMode !== "stripe") {
+      return res.status(400).json({
+        error: "Stripe payments are disabled",
+        message: "Stripe payments are disabled. Please choose Subscribe from Company.",
+      });
+    }
+
     console.log("[Stripe] Request body:", req.body);
     // Accept both plan_id/planId and user_id/userId
     const plan_id = req.body.plan_id || req.body.planId;
@@ -299,6 +308,17 @@ export const createCheckoutSession = async (req, res) => {
 export const createProjectCheckoutSession = async (req, res) => {
   const client = await pool.connect();
   try {
+    // Check payment mode feature flag
+    const paymentsMode = (process.env.PAYMENTS_MODE || "offline").toLowerCase();
+    
+    if (paymentsMode === "offline") {
+      return res.status(400).json({
+        success: false,
+        message: "Stripe payments are currently disabled. Please use offline payment methods (CliQ or Cash).",
+        code: "STRIPE_DISABLED",
+      });
+    }
+
     if (!process.env.STRIPE_SECRET_KEY || String(process.env.STRIPE_SECRET_KEY).trim() === "") {
       return res.status(500).json({
         success: false,

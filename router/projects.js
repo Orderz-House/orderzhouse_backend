@@ -30,6 +30,12 @@ import {
   requestProjectChanges,
   getProjectChangeRequests,
   markProjectChangeRequestsAsRead,
+  // offline payment
+  createOfflinePayment,
+  adminApproveOfflinePayment,
+  adminRejectOfflinePayment,
+  getPendingApprovalProjects,
+  getProjectSuccess,
 } from "../controller/projectsManagment/projects.js";
 
 import {
@@ -170,7 +176,8 @@ projectsRouter.put(
 projectsRouter.post(
   "/:projectId/files",
   authentication,
-  upload.array("files", 5),
+  upload.array("attachments", 10),
+  uploadErrorHandler,
   addProjectFiles
 );
 
@@ -204,6 +211,13 @@ projectsRouter.get(
   authentication,
   // adminViewerOnly,
   getAllProjectsForAdmin
+);
+
+// Admin: list pending approval projects
+projectsRouter.get(
+  "/admin/projects/pending",
+  authentication,
+  getPendingApprovalProjects
 );
 
 // Admin: reassign freelancer to admin project
@@ -308,6 +322,43 @@ projectsRouter.post(
   authentication,
   requestProjectChanges
 );
+
+/* ======================================================================
+   OFFLINE PAYMENT ENDPOINTS
+====================================================================== */
+projectsRouter.post(
+  "/:projectId/offline-payment",
+  authentication,
+  createOfflinePayment
+);
+
+projectsRouter.post(
+  "/admin/projects/:projectId/approve-offline-payment",
+  authentication,
+  adminApproveOfflinePayment
+);
+
+projectsRouter.post(
+  "/admin/projects/:projectId/reject-offline-payment",
+  authentication,
+  adminRejectOfflinePayment
+);
+
+// Alternative endpoints for approve/reject (matching requirements)
+projectsRouter.post(
+  "/admin/projects/:id/approve",
+  authentication,
+  adminApproveOfflinePayment
+);
+
+projectsRouter.post(
+  "/admin/projects/:id/reject",
+  authentication,
+  adminRejectOfflinePayment
+);
+
+// GET project for success page
+projectsRouter.get("/success/:id", authentication, getProjectSuccess);
 
 /* GET single project by ID (must be after all other /:projectId and literal routes) */
 projectsRouter.get("/:projectId", authentication, getProjectById);

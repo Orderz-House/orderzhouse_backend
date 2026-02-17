@@ -466,7 +466,7 @@ export const confirmCheckoutSession = async (req, res) => {
             projectStatus,
           });
 
-          // Create project with computed status
+          // Create project with computed status and payment_method='stripe'
           const projectInsertResult = await pool.query(
             `
             INSERT INTO projects (
@@ -486,9 +486,11 @@ export const confirmCheckoutSession = async (req, res) => {
               preferred_skills,
               status,
               completion_status,
-              is_deleted
+              is_deleted,
+              payment_method,
+              admin_approval_status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'not_started', false)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'not_started', false, 'stripe', 'none')
             RETURNING id, title
             `,
             [

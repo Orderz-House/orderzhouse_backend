@@ -1,6 +1,6 @@
 import express from "express";
 import {
-  register,
+  register, // Disabled - returns 410, use request-signup-otp + verify-and-register
   login,
   verifyOTP,
   refreshToken,
@@ -12,8 +12,6 @@ import {
   forgotPassword,
   resetPassword,
   deactivateAccount,
-  verifyEmailOtp,
-  resendEmailOtp,
   uploadProfilePic,
   sendOtpController,
   getUserdata,
@@ -42,9 +40,9 @@ import {
 const usersRouter = express.Router();
 
 // =============== PUBLIC ROUTES ===============
+// Legacy register endpoint disabled - use request-signup-otp + verify-and-register instead
 usersRouter.post("/register", registerValidator, validateRequest, register);
-usersRouter.post("/verify-email", verifyEmailValidator, validateRequest, verifyEmailOtp);
-usersRouter.post("/resend-email-otp", resendEmailOtp);
+// Legacy verify-email and resend-email-otp removed - use request-signup-otp + verify-and-register instead
 usersRouter.post("/login", loginValidator, validateRequest, login);
 usersRouter.post("/verify-otp", verifyOtpValidator, validateRequest, verifyOTP);
 usersRouter.post("/send-otp", sendOtpController);

@@ -10,15 +10,17 @@ import {
   verifyRefreshToken,
 } from "../utils/tokenHelper.js";
 import { LogCreators, ACTION_TYPES } from "../services/loggingService.js";
-import { NotificationCreators } from "../services/notificationService.js"; // تركته زي ما هو
-import eventBus from "../events/eventBus.js"; // ✅ ADDED
-import nodemailer from "nodemailer";
+import { NotificationCreators } from "../services/notificationService.js";
+import eventBus from "../events/eventBus.js";
 import pool from "../models/db.js";
 import cloudinary from "../cloudinary/setupfile.js";
 import { Readable } from "stream";
 import dotenv from "dotenv";
+import { generateOtp, hashOtp, verifyOtp } from "../services/otpService.js";
+import { sendEmail } from "../utils/mailer.js";
 
 dotenv.config();
+
 
 /* =========================================
    CLOUDINARY UPLOAD HELPER
@@ -47,55 +49,36 @@ const uploadFilesToCloudinary = async (files, folder) => {
 };
 
 /* =========================================
-   EMAIL TRANSPORTER
+   LEGACY OTP DELIVERY (for login OTP only)
+   Note: New signup OTP uses sendEmail from utils/mailer.js
 ========================================= */
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT),
-  secure: process.env.SMTP_SECURE === "true",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-/* =========================================
-   OTP HELPERS
-========================================= */
-const generateOtp = () =>
-  Math.floor(100000 + Math.random() * 900000).toString();
-
-/**
- * إرسال OTP إما على الإيميل أو (مستقبلاً) SMS
- */
-const deliverOtp = async (destination, method, otp) => {
+const deliverOtp = async (destination, method, otp, subject = "Your login verification code", expiryMinutes = 2) => {
   try {
     if (method === "sms") {
-      // لو حابب تركّب Twilio أو غيره لاحقاً
       console.log(
         `[OTP - SMS] To: ${destination} | Code: ${otp} (integrate SMS provider here)`
       );
       return;
     }
 
-    // الوضع الافتراضي: إيميل
-    const mailOptions = {
-      from: `"OrderzHouse" <${process.env.EMAIL_FROM}>`,
+    await sendEmail({
       to: destination,
-      subject: "Your login verification code",
+      subject,
       html: `
-        <h2>Login verification</h2>
-        <p>Use the following One-Time Password (OTP) to complete your login:</p>
-        <h1 style="color:#007bff; font-size: 26px; letter-spacing:4px;">${otp}</h1>
-        <p>This code expires in <b>2 minutes</b>.</p>
-        <br/>
-        <p>Thanks,<br/>OrderzHouse Team</p>
+        <div style="font-family:Arial,sans-serif;line-height:1.5;color:#333">
+          <h2>Login verification</h2>
+          <p>Use the following One-Time Password (OTP) to complete your login:</p>
+          <h1 style="color:#007bff; font-size: 32px; letter-spacing:4px; text-align:center;">${otp}</h1>
+          <p>This code expires in <b>${expiryMinutes} minutes</b>.</p>
+          <p style="color:#666; font-size:12px; margin-top:20px;">If you didn't request this, please ignore this email.</p>
+          <br/>
+          <p>Thanks,<br/>OrderzHouse Team</p>
+        </div>
       `,
-    };
-
-    await transporter.sendMail(mailOptions);
+      text: `Your verification code is: ${otp}. This code expires in ${expiryMinutes} minutes.`,
+    });
   } catch (err) {
-    console.error("deliverOtp error:", err);
+    console.error("❌ deliverOtp error:", err);
     throw err;
   }
 };
@@ -320,9 +303,18 @@ const deliverOtp = async (destination, method, otp) => {
 //   }
 // };
 /* ======================================================
-   REGISTER (NO EMAIL / NO OTP)
+   REGISTER (LEGACY - DISABLED)
+   This endpoint is disabled. Use request-signup-otp + verify-and-register instead.
 ====================================================== */
 const register = async (req, res) => {
+  return res.status(410).json({
+    success: false,
+    message: "This registration endpoint is no longer available. Please use the two-step signup flow: request-signup-otp, then verify-and-register.",
+  });
+};
+
+// Legacy register implementation removed - use verify-and-register instead
+const _registerLegacyDisabled = async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -477,7 +469,7 @@ const register = async (req, res) => {
     const user = userResult.rows[0];
 
     /* =========================
-       GENERATE AND SEND EMAIL OTP
+       OTP HANDLING
     ========================= */
     const emailOtp = generateOtp();
     const emailOtpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
@@ -487,24 +479,24 @@ const register = async (req, res) => {
       [emailOtp, emailOtpExpires, user.id]
     );
 
-    // Send OTP email - if this fails, rollback registration
+    // Send OTP email - if this fails, rollback registration (legacy code - not used)
     try {
-      const mailOptions = {
-        from: `"OrderzHouse" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+      await sendEmail({
         to: user.email,
         subject: "Verify your email - OrderzHouse",
         html: `
-          <h2>Hello ${user.first_name}</h2>
-          <p>Welcome to OrderzHouse! Please verify your email address.</p>
-          <p>Your verification code:</p>
-          <h1 style="color:#007bff; font-size: 32px; letter-spacing:4px; text-align:center;">${emailOtp}</h1>
-          <p>This code expires in <b>5 minutes</b>.</p>
-          <br/>
-          <p>Thanks,<br/>OrderzHouse Team</p>
+          <div style="font-family:Arial,sans-serif;line-height:1.5;color:#333">
+            <h2>Hello ${user.first_name}</h2>
+            <p>Welcome to OrderzHouse! Please verify your email address.</p>
+            <p>Your verification code:</p>
+            <h1 style="color:#007bff; font-size: 32px; letter-spacing:4px; text-align:center;">${emailOtp}</h1>
+            <p>This code expires in <b>5 minutes</b>.</p>
+            <br/>
+            <p>Thanks,<br/>OrderzHouse Team</p>
+          </div>
         `,
-      };
-
-      await transporter.sendMail(mailOptions);
+        text: `Your verification code is: ${emailOtp}. This code expires in 5 minutes.`,
+      });
       console.log(`✅ Registration OTP email sent to ${user.email}`);
     } catch (emailError) {
       await client.query("ROLLBACK");
@@ -604,6 +596,7 @@ const register = async (req, res) => {
       success: true,
       message: "Registered successfully. OTP sent to your email ✅",
       user_id: user.id,
+      email_verified: false,
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -620,163 +613,16 @@ const register = async (req, res) => {
 };
 
 /* ======================================================
-   VERIFY EMAIL OTP
+   VERIFY EMAIL OTP (LEGACY - REMOVED)
+   This endpoint is removed. Use verify-and-register for signup OTP verification.
 ====================================================== */
-const verifyEmailOtp = async (req, res) => {
-  const { email, otp } = req.body;
-
-  if (!email || !otp) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Email and OTP are required" });
-  }
-
-  try {
-    const { rows } = await pool.query(
-      "SELECT id, email_otp, email_otp_expires FROM users WHERE email = $1",
-      [email.toLowerCase()]
-    );
-
-    if (rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    const user = rows[0];
-
-    if (!user.email_otp) {
-      return res.status(400).json({
-        success: false,
-        message: "No OTP found. Please request a new one.",
-      });
-    }
-
-    if (user.email_otp !== otp) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid OTP" });
-    }
-
-    if (new Date() > new Date(user.email_otp_expires)) {
-      return res.status(400).json({
-        success: false,
-        message: "OTP expired. Please request a new one.",
-      });
-    }
-
-    await pool.query(
-      "UPDATE users SET email_verified = TRUE, email_otp = NULL, email_otp_expires = NULL WHERE id = $1",
-      [user.id]
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Email verified successfully ✅",
-    });
-  } catch (err) {
-    console.error("Verify Email OTP Error:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Server error" });
-  }
-};
+// Legacy endpoint removed - signup now uses verify-and-register
 
 /* ======================================================
-   RESEND EMAIL OTP
+   RESEND EMAIL OTP (LEGACY - REMOVED)
+   This endpoint is removed. Use request-signup-otp to request a new OTP.
 ====================================================== */
-const resendEmailOtp = async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({
-      success: false,
-      message: "Email is required",
-    });
-  }
-
-  try {
-    const { rows } = await pool.query(
-      "SELECT id, first_name, email, email_verified, email_otp_expires FROM users WHERE email = $1 AND is_deleted = FALSE",
-      [email.toLowerCase()]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    const user = rows[0];
-
-    if (user.email_verified) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is already verified",
-      });
-    }
-
-    // Throttle: Allow resend only if previous OTP expired or doesn't exist
-    const now = new Date();
-    const lastExpiry = user.email_otp_expires ? new Date(user.email_otp_expires) : null;
-    
-    if (lastExpiry && now < lastExpiry) {
-      const secondsLeft = Math.ceil((lastExpiry - now) / 1000);
-      return res.status(429).json({
-        success: false,
-        message: `Please wait ${secondsLeft} seconds before requesting a new code`,
-      });
-    }
-
-    // Generate new OTP
-    const emailOtp = generateOtp();
-    const emailOtpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-    await pool.query(
-      "UPDATE users SET email_otp = $1, email_otp_expires = $2 WHERE id = $3",
-      [emailOtp, emailOtpExpires, user.id]
-    );
-
-    // Send OTP email
-    try {
-      const mailOptions = {
-        from: `"OrderzHouse" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
-        to: user.email,
-        subject: "Verify your email - OrderzHouse",
-        html: `
-          <h2>Hello ${user.first_name}</h2>
-          <p>Your new verification code:</p>
-          <h1 style="color:#007bff; font-size: 32px; letter-spacing:4px; text-align:center;">${emailOtp}</h1>
-          <p>This code expires in <b>5 minutes</b>.</p>
-          <br/>
-          <p>Thanks,<br/>OrderzHouse Team</p>
-        `,
-      };
-
-      await transporter.sendMail(mailOptions);
-      console.log(`✅ Resend OTP email sent to ${user.email}`);
-
-      return res.status(200).json({
-        success: true,
-        message: "OTP sent successfully",
-      });
-    } catch (emailError) {
-      console.error("❌ Failed to send resend OTP email:", emailError);
-      return res.status(500).json({
-        success: false,
-        message: "Failed to send email. Please try again later.",
-        error: process.env.NODE_ENV === "development" ? emailError.message : undefined,
-      });
-    }
-  } catch (err) {
-    console.error("Resend Email OTP Error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-};
+// Legacy endpoint removed - signup now uses request-signup-otp
 
 /* ======================================================
    LOGIN + OTP
@@ -807,7 +653,6 @@ const login = async (req, res) => {
         .json({ success: false, message: "No account found for these credentials" });
     }
 
-    // لو الإيميل مش مفاعَل
     if (!user.email_verified) {
       return res.status(403).json({
         success: false,
@@ -879,16 +724,33 @@ const login = async (req, res) => {
 
     // من هون وطالع → يا باسورد غلط أكثر من مرة أو عندنا login مشبوه → نرسل OTP
     const otp = generateOtp();
-    const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // 2 دقائق
+    const otpHash = hashOtp(otp);
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes
 
+    // Store hashed OTP (keep otp_code for backward compatibility during migration)
     await pool.query(
-      "UPDATE users SET otp_code=$1, otp_expires=$2 WHERE id=$3",
-      [otp, expiresAt, user.id]
+      "UPDATE users SET otp_code=$1, otp_code_hash=$2, otp_expires=$3 WHERE id=$4",
+      [otp, otpHash, expiresAt, user.id]
     );
 
     const destination =
       otpMethod === "email" ? user.email : user.phone_number;
-    await deliverOtp(destination, otpMethod, otp);
+    
+    try {
+      await deliverOtp(destination, otpMethod, otp);
+    } catch (otpError) {
+      console.error("❌ Failed to send OTP during login:", otpError);
+      // Clear the OTP from database if sending failed
+      await pool.query(
+        "UPDATE users SET otp_code=NULL, otp_expires=NULL WHERE id=$1",
+        [user.id]
+      );
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send OTP. Please try again later.",
+        error: process.env.NODE_ENV === "development" ? otpError.message : undefined,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -928,20 +790,31 @@ const verifyOTP = async (req, res) => {
         .json({ success: false, message: "No account found for these credentials" });
     }
 
-    if (user.otp_code !== otp) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid OTP" });
-    }
-
+    // Check expiry first
     if (!user.otp_expires || new Date() > new Date(user.otp_expires)) {
       return res
         .status(400)
         .json({ success: false, message: "OTP expired" });
     }
 
+    // Verify OTP: prefer hashed verification, fallback to plain text for migration
+    let otpValid = false;
+    if (user.otp_code_hash) {
+      otpValid = verifyOtp(otp, user.otp_code_hash);
+    } else if (user.otp_code) {
+      // Fallback for migration period
+      otpValid = user.otp_code === otp;
+    }
+
+    if (!otpValid) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid OTP" });
+    }
+
+    // Clear OTP after successful verification
     await pool.query(
-      "UPDATE users SET otp_code=NULL, otp_expires=NULL, failed_login_attempts=0 WHERE id=$1",
+      "UPDATE users SET otp_code=NULL, otp_code_hash=NULL, otp_expires=NULL, failed_login_attempts=0 WHERE id=$1",
       [user.id]
     );
 
@@ -1005,8 +878,8 @@ const sendOtpController = async (req, res) => {
     console.error("sendOtpController Error:", err);
     return res.status(500).json({
       success: false,
-      message: "Login error",
-      error: err.message,
+      message: "Failed to send OTP. Please try again later.",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
 };
@@ -1014,7 +887,11 @@ const sendOtpController = async (req, res) => {
 /* ======================================================
    REQUEST SIGNUP OTP (no user created yet)
    POST /users/request-signup-otp  body: { email }
+   Rate limited: 3 requests per 15 minutes per email + IP
 ====================================================== */
+// Simple in-memory rate limiting (for production, consider Redis)
+const signupOtpRateLimit = new Map(); // key: "email:ip" -> { count, resetAt }
+
 const requestSignupOtp = async (req, res) => {
   try {
     const { email } = req.body;
@@ -1026,26 +903,87 @@ const requestSignupOtp = async (req, res) => {
     if (!emailRegex.test(emailLower)) {
       return res.status(400).json({ success: false, message: "Invalid email format" });
     }
+
+    // Check if email already registered
     const existing = await pool.query("SELECT id FROM users WHERE email = $1", [emailLower]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ success: false, message: "This email is already registered. Try logging in." });
     }
+
+    // Rate limiting: 3 requests per 15 minutes per email + IP
+    const clientIp = req.ip || req.connection.remoteAddress || "unknown";
+    const rateLimitKey = `${emailLower}:${clientIp}`;
+    const now = Date.now();
+    const rateLimitWindow = 15 * 60 * 1000; // 15 minutes
+    const maxRequests = 3;
+
+    const rateLimitData = signupOtpRateLimit.get(rateLimitKey);
+    if (rateLimitData) {
+      if (now < rateLimitData.resetAt) {
+        if (rateLimitData.count >= maxRequests) {
+          const minutesLeft = Math.ceil((rateLimitData.resetAt - now) / 60000);
+          return res.status(429).json({
+            success: false,
+            message: `Too many requests. Please try again in ${minutesLeft} minute(s).`,
+          });
+        }
+        rateLimitData.count++;
+      } else {
+        // Reset window
+        signupOtpRateLimit.set(rateLimitKey, { count: 1, resetAt: now + rateLimitWindow });
+      }
+    } else {
+      signupOtpRateLimit.set(rateLimitKey, { count: 1, resetAt: now + rateLimitWindow });
+    }
+
+    // Clean up old rate limit entries (simple cleanup)
+    if (Math.random() < 0.01) { // 1% chance to cleanup
+      for (const [key, data] of signupOtpRateLimit.entries()) {
+        if (now >= data.resetAt) {
+          signupOtpRateLimit.delete(key);
+        }
+      }
+    }
+
+    // Generate OTP and hash it
     const otp = generateOtp();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+    const otpHash = hashOtp(otp);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    // Store hashed OTP (keep plain otp column for backward compatibility during migration)
     await pool.query(
-      `INSERT INTO signup_otps (email, otp, expires_at) VALUES ($1, $2, $3)
-       ON CONFLICT (email) DO UPDATE SET otp = $2, expires_at = $3`,
-      [emailLower, otp, expiresAt]
+      `INSERT INTO signup_otps (email, otp, otp_hash, expires_at) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (email) DO UPDATE SET otp = $2, otp_hash = $3, expires_at = $4`,
+      [emailLower, otp, otpHash, expiresAt]
     );
-    await deliverOtp(emailLower, "email", otp);
-    console.log("[request-signup-otp] OTP sent to", emailLower, "status=200");
+
+    // Send OTP email using Resend
+    await sendEmail({
+      to: emailLower,
+      subject: "Your OrderzHouse verification code",
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.5;color:#333;max-width:600px;margin:0 auto">
+          <h2 style="color:#007bff;">OrderzHouse Verification</h2>
+          <p>Hello,</p>
+          <p>Use the following verification code to complete your registration:</p>
+          <h1 style="color:#007bff; font-size: 32px; letter-spacing:4px; text-align:center; background:#f2f2f2; padding:20px; border-radius:8px;">${otp}</h1>
+          <p style="text-align:center;">This code expires in <b>5 minutes</b>.</p>
+          <p style="color:#666; font-size:12px; margin-top:20px;">If you didn't request this, please ignore this email.</p>
+          <br/>
+          <p>Thanks,<br/>OrderzHouse Team</p>
+        </div>
+      `,
+      text: `Your OrderzHouse verification code is: ${otp}. This code expires in 5 minutes. If you didn't request this, please ignore this email.`,
+    });
+
+    console.log("[request-signup-otp] OTP sent to", emailLower);
     return res.status(200).json({ success: true, message: "Verification code sent. Check your email (and spam folder)." });
   } catch (err) {
     console.error("requestSignupOtp Error:", err);
     return res.status(500).json({
       success: false,
       message: "Failed to send verification code",
-      error: err.message,
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
 };
@@ -1076,19 +1014,32 @@ const verifyAndRegister = async (req, res) => {
     }
     const emailLower = email.toLowerCase().trim();
 
+    // Load OTP from signup_otps table (prefer otp_hash, fallback to otp for migration)
     const otpRow = await pool.query(
-      "SELECT otp, expires_at FROM signup_otps WHERE email = $1",
+      "SELECT otp, otp_hash, expires_at FROM signup_otps WHERE email = $1",
       [emailLower]
     );
     if (otpRow.rows.length === 0) {
       return res.status(400).json({ success: false, message: "No verification code found for this email. Request a new code." });
     }
-    const { otp: storedOtp, expires_at: expiresAt } = otpRow.rows[0];
-    if (storedOtp !== otp) {
-      return res.status(400).json({ success: false, message: "Invalid OTP" });
-    }
+    const { otp: storedOtp, otp_hash: storedOtpHash, expires_at: expiresAt } = otpRow.rows[0];
+    
+    // Check expiry first
     if (new Date() > new Date(expiresAt)) {
       return res.status(400).json({ success: false, message: "OTP expired. Request a new code." });
+    }
+
+    // Verify OTP: prefer hashed verification, fallback to plain text for migration
+    let otpValid = false;
+    if (storedOtpHash) {
+      otpValid = verifyOtp(otp, storedOtpHash);
+    } else if (storedOtp) {
+      // Fallback for migration period
+      otpValid = storedOtp === otp;
+    }
+
+    if (!otpValid) {
+      return res.status(400).json({ success: false, message: "Invalid OTP" });
     }
 
     if (!role_id || !first_name || !last_name || !password || !phone_number || !country || !username) {
@@ -1561,20 +1512,21 @@ const hashToken = (raw) =>
 
 const sendPasswordResetEmail = async (destination, resetUrl) => {
   try {
-    const mailOptions = {
-      from: `"OrderzHouse" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+    await sendEmail({
       to: destination,
       subject: "Reset your password - OrderzHouse",
       html: `
-        <h2>Password reset</h2>
-        <p>You requested a password reset. Click the link below (valid for ${RESET_EXPIRY_MINUTES} minutes):</p>
-        <p><a href="${resetUrl}" style="color:#ea580c;">${resetUrl}</a></p>
-        <p>If you did not request this, ignore this email.</p>
-        <br/>
-        <p>— OrderzHouse Team</p>
+        <div style="font-family:Arial,sans-serif;line-height:1.5;color:#333">
+          <h2>Password reset</h2>
+          <p>You requested a password reset. Click the link below (valid for ${RESET_EXPIRY_MINUTES} minutes):</p>
+          <p><a href="${resetUrl}" style="color:#ea580c;text-decoration:underline;">${resetUrl}</a></p>
+          <p style="color:#666; font-size:12px; margin-top:20px;">If you did not request this, please ignore this email.</p>
+          <br/>
+          <p>— OrderzHouse Team</p>
+        </div>
       `,
-    };
-    await transporter.sendMail(mailOptions);
+      text: `You requested a password reset. Click the link below (valid for ${RESET_EXPIRY_MINUTES} minutes): ${resetUrl}. If you did not request this, please ignore this email.`,
+    });
   } catch (err) {
     console.error("sendPasswordResetEmail error:", err);
     throw err;
@@ -1605,10 +1557,10 @@ const forgotPassword = async (req, res) => {
 
       const resetUrl = `${frontendUrl}/reset-password/${rawToken}`;
 
-      if (process.env.SMTP_HOST && process.env.EMAIL_USER) {
+      if (process.env.RESEND_API_KEY && process.env.EMAIL_FROM) {
         await sendPasswordResetEmail(email, resetUrl);
       } else {
-        console.log("[DEV] Password reset URL (no SMTP):", resetUrl);
+        console.log("[DEV] Password reset URL (no email config):", resetUrl);
       }
     }
   } catch (err) {
@@ -1911,9 +1863,25 @@ const getDeactivatedUsers = async (req, res) => {
 const refreshToken = async (req, res) => {
   try {
     const token = req.cookies?.refreshToken;
+    
+    // Enhanced debugging for production issues
     if (!token) {
-      return res.status(401).json({ success: false, message: "Refresh token missing" });
+      const debugInfo = process.env.NODE_ENV === "development" ? {
+        cookies: Object.keys(req.cookies || {}),
+        cookieHeader: req.headers.cookie ? "present" : "missing",
+      } : {};
+      
+      if (process.env.NODE_ENV === "development") {
+        console.warn("❌ Refresh token missing:", debugInfo);
+      }
+      
+      return res.status(401).json({ 
+        success: false, 
+        message: "Refresh token missing",
+        ...debugInfo
+      });
     }
+    
     const decoded = verifyRefreshToken(token);
     const newAccessToken = issueAccessToken({
       userId: decoded.userId,
@@ -1923,9 +1891,39 @@ const refreshToken = async (req, res) => {
       is_deleted: decoded.is_deleted,
       is_two_factor_enabled: decoded.is_two_factor_enabled,
     });
+    
+    // Set new refresh token cookie (rotate on each refresh for security)
+    const newRefreshToken = issueRefreshToken({
+      userId: decoded.userId,
+      role: decoded.role,
+      is_verified: decoded.is_verified,
+      username: decoded.username,
+      is_deleted: decoded.is_deleted,
+      is_two_factor_enabled: decoded.is_two_factor_enabled,
+    });
+    setRefreshTokenCookie(res, newRefreshToken);
+    
+    if (process.env.NODE_ENV === "development") {
+      console.log("✅ Token refreshed successfully for user:", decoded.userId);
+    }
+    
     return res.status(200).json({ token: newAccessToken });
   } catch (err) {
-    return res.status(401).json({ success: false, message: "Invalid or expired refresh token" });
+    const errorMessage = err.name === "TokenExpiredError" 
+      ? "Refresh token expired" 
+      : err.name === "JsonWebTokenError"
+      ? "Invalid refresh token"
+      : "Invalid or expired refresh token";
+    
+    if (process.env.NODE_ENV === "development") {
+      console.error("❌ Refresh token error:", err.name, err.message);
+    }
+    
+    return res.status(401).json({ 
+      success: false, 
+      message: errorMessage,
+      error: process.env.NODE_ENV === "development" ? err.message : undefined
+    });
   }
 };
 
@@ -1941,7 +1939,7 @@ const logout = async (req, res) => {
    EXPORTS
 ========================================= */
 export {
-  register,
+  register, // Disabled - returns 410, use request-signup-otp + verify-and-register
   login,
   verifyOTP,
   refreshToken,
@@ -1953,8 +1951,8 @@ export {
   forgotPassword,
   resetPassword,
   deactivateAccount,
-  verifyEmailOtp,
-  resendEmailOtp,
+  // verifyEmailOtp removed - use verify-and-register instead
+  // resendEmailOtp removed - use request-signup-otp instead
   uploadProfilePic,
   sendOtpController,
   getUserdata,

@@ -59,7 +59,7 @@ import ratingsRouter from "./router/rating.js";
 import Blogsrouter from "./router/blogs.js"
 import freelancerCategoriesRouter from "./router/freelancerCategories.js";
 import subscriptionsRoutes from "./router/subscription.js";
-//import analyticsRoutes from "./router/analytics.js";
+import analyticsRoutes from "./router/analytics.js";
 import emailVerificationRoutes from "./router/emailVerification.js";
 import chatsRouter from "./router/chats.js";
 import StripeRouter from "./router/Stripe/stripe.js";
@@ -183,7 +183,7 @@ app.use("/admUser" , AdminUser)
 app.use("/category" , categoriesRouter);
 app.use("/tasks", tasksRouter);
 app.use("/offers", offersRouter);
-//app.use("/analytics", analyticsRoutes);
+app.use("/analytics", analyticsRoutes);
 app.use("/projects", projectsRouter);
 app.use("/users", usersRouter);
 app.use("/plans", plansRouter);

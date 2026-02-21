@@ -416,9 +416,12 @@ export const createProjectCheckoutSession = async (req, res) => {
       });
     }
 
-    const successUrl = `${clientUrl.replace(/\/$/, "")}/projects/payment-success?session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${clientUrl.replace(/\/$/, "")}/projects/payment-cancel`;
-
+    const successUrl = bodySuccessUrl
+      ? bodySuccessUrl
+      : `${clientUrl.replace(/\/$/, "")}/projects/payment-success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = bodyCancelUrl
+      ? bodyCancelUrl
+      : `${clientUrl.replace(/\/$/, "")}/projects/payment-cancel`;
 
     const stripe = getStripe();
     const session = await stripe.checkout.sessions.create({

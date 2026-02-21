@@ -665,98 +665,51 @@ const login = async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (validPassword) {
-      // لو مافي محاولات فاشلة → Login مباشر بدون OTP
-      if ((user.failed_login_attempts || 0) === 0) {
-        await pool.query(
-          "UPDATE users SET otp_code=NULL, otp_expires=NULL, failed_login_attempts=0 WHERE id=$1",
-          [user.id]
-        );
-
-        const tokenPayload = buildTokenPayload(user);
-        const token = issueAccessToken(tokenPayload);
-        const refreshToken = issueRefreshToken(tokenPayload);
-        setRefreshTokenCookie(res, refreshToken);
-
-        // Check terms acceptance
-        const { CURRENT_TERMS_VERSION } = await import("../config/terms.js");
-        const mustAcceptTerms = !user.terms_accepted_at || user.terms_version !== CURRENT_TERMS_VERSION;
-
-        return res.status(200).json({
-          success: true,
-          message: "Login successful",
-          token,
-          userInfo: {
-            id: user.id,
-            username: user.username,
-            email: user.email,
-            role_id: user.role_id,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            profile_pic_url: user.profile_pic_url,
-            is_deleted: user.is_deleted,
-            is_two_factor_enabled: user.is_two_factor_enabled,
-            email_verified: user.email_verified,
-          },
-          must_accept_terms: mustAcceptTerms,
-          terms_version_required: CURRENT_TERMS_VERSION,
-        });
-      }
-
-      // لو فيه محاولات فاشلة قديمة → صفّر العداد وخليه يكمل على OTP
+      // Login مباشر بدون OTP (تم تعطيل خطوة OTP عند تسجيل الدخول)
       await pool.query(
-        "UPDATE users SET failed_login_attempts=0 WHERE id=$1",
+        "UPDATE users SET otp_code=NULL, otp_expires=NULL, otp_code_hash=NULL, failed_login_attempts=0 WHERE id=$1",
         [user.id]
       );
-    } else {
-      const newAttempts = (user.failed_login_attempts || 0) + 1;
-      await pool.query(
-        "UPDATE users SET failed_login_attempts=$1 WHERE id=$2",
-        [newAttempts, user.id]
-      );
 
-      if (newAttempts < 3) {
-        return res.status(401).json({
-          success: false,
-          message: "No account found for these credentials",
-        });
-      }
-    }
+      const tokenPayload = buildTokenPayload(user);
+      const token = issueAccessToken(tokenPayload);
+      const refreshToken = issueRefreshToken(tokenPayload);
+      setRefreshTokenCookie(res, refreshToken);
 
-    // من هون وطالع → يا باسورد غلط أكثر من مرة أو عندنا login مشبوه → نرسل OTP
-    const otp = generateOtp();
-    const otpHash = hashOtp(otp);
-    const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes
+      const { CURRENT_TERMS_VERSION } = await import("../config/terms.js");
+      const mustAcceptTerms = !user.terms_accepted_at || user.terms_version !== CURRENT_TERMS_VERSION;
 
-    // Store hashed OTP (keep otp_code for backward compatibility during migration)
-    await pool.query(
-      "UPDATE users SET otp_code=$1, otp_code_hash=$2, otp_expires=$3 WHERE id=$4",
-      [otp, otpHash, expiresAt, user.id]
-    );
-
-    const destination =
-      otpMethod === "email" ? user.email : user.phone_number;
-    
-    try {
-      await deliverOtp(destination, otpMethod, otp);
-    } catch (otpError) {
-      console.error("❌ Failed to send OTP during login:", otpError);
-      // Clear the OTP from database if sending failed
-      await pool.query(
-        "UPDATE users SET otp_code=NULL, otp_expires=NULL WHERE id=$1",
-        [user.id]
-      );
-      return res.status(500).json({
-        success: false,
-        message: "Failed to send OTP. Please try again later.",
-        error: process.env.NODE_ENV === "development" ? otpError.message : undefined,
+      return res.status(200).json({
+        success: true,
+        message: "Login successful",
+        token,
+        userInfo: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role_id: user.role_id,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          profile_pic_url: user.profile_pic_url,
+          is_deleted: user.is_deleted,
+          is_two_factor_enabled: user.is_two_factor_enabled,
+          email_verified: user.email_verified,
+        },
+        must_accept_terms: mustAcceptTerms,
+        terms_version_required: CURRENT_TERMS_VERSION,
       });
     }
 
-    return res.status(200).json({
-      success: true,
-      requires_email_otp: true,
-      user_id: user.id,
-      username: user.username,
+    // باسورد غلط: نزيد المحاولات ونرجع 401 بدون إرسال OTP
+    const newAttempts = (user.failed_login_attempts || 0) + 1;
+    await pool.query(
+      "UPDATE users SET failed_login_attempts=$1 WHERE id=$2",
+      [newAttempts, user.id]
+    );
+
+    return res.status(401).json({
+      success: false,
+      message: "No account found for these credentials",
     });
   } catch (err) {
     console.error("Login Error:", err);

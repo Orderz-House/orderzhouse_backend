@@ -28,13 +28,20 @@ export const createEscrowHeld = async ({ projectId, clientId, freelancerId, amou
       [projectId, clientId, freelancerId, amount, paymentId]
     );
   } else {
-    // For bidding projects without payment_id
-    await queryClient.query(
-      `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status)
-       VALUES ($1, $2, $3, $4, 'held')
-       ON CONFLICT (project_id) WHERE payment_id IS NULL DO NOTHING`,
-      [projectId, clientId, freelancerId, amount]
+    // For bidding projects without payment_id.
+    // Avoid ON CONFLICT (project_id) WHERE payment_id IS NULL so we don't depend on
+    // the partial unique index existing (migration may not have been run).
+    const exists = await queryClient.query(
+      `SELECT id FROM escrow WHERE project_id = $1 AND payment_id IS NULL LIMIT 1`,
+      [projectId]
     );
+    if (exists.rows.length === 0) {
+      await queryClient.query(
+        `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status)
+         VALUES ($1, $2, $3, $4, 'held')`,
+        [projectId, clientId, freelancerId, amount]
+      );
+    }
   }
 };
 

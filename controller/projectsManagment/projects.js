@@ -2176,13 +2176,18 @@ export const createOfflinePayment = async (req, res) => {
 
     const project = projectCheck.rows[0];
 
-    // Only allow for fixed/hourly projects (bidding doesn't need payment)
+    // Bidding: allow only when project is already pending_admin_approval (client accepted an offer)
     if (project.project_type === "bidding") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: "Bidding projects do not require payment",
-      });
+      const status = String(project.status || "").toLowerCase();
+      if (status !== "pending_admin_approval") {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: "Bidding projects do not require payment at this stage",
+        });
+      }
+    } else {
+      // Fixed/hourly: allowed for normal flow
     }
 
     // Check if already has payment method set
@@ -2195,16 +2200,22 @@ export const createOfflinePayment = async (req, res) => {
     }
 
     const paymentMethod = method.toLowerCase();
+    const isBidding = project.project_type === "bidding";
 
-    // Update project with offline payment method and pending approval
-    await client.query(
-      `UPDATE projects 
-       SET payment_method = $1,
-           admin_approval_status = 'pending',
-           status = 'pending_admin_approval'
-       WHERE id = $2`,
-      [paymentMethod, projectId]
-    );
+    // Update project: set payment_method; for fixed/hourly also set status to pending_admin_approval
+    if (isBidding) {
+      await client.query(
+        `UPDATE projects SET payment_method = $1, admin_approval_status = 'pending', updated_at = NOW() WHERE id = $2`,
+        [paymentMethod, projectId]
+      );
+    } else {
+      await client.query(
+        `UPDATE projects 
+         SET payment_method = $1, admin_approval_status = 'pending', status = 'pending_admin_approval', updated_at = NOW()
+         WHERE id = $2`,
+        [paymentMethod, projectId]
+      );
+    }
 
     await client.query("COMMIT");
 
@@ -2537,7 +2548,7 @@ export const getProjectSuccess = async (req, res) => {
       `SELECT 
         p.id, p.title, p.description, p.budget, p.budget_min, p.budget_max, 
         p.project_type, p.duration_days, p.duration_hours, p.preferred_skills,
-        p.payment_method, p.admin_approval_status, p.created_at, p.user_id,
+        p.payment_method, p.admin_approval_status, p.status, p.created_at, p.user_id,
         c.name AS category_name,
         ssc.name AS sub_sub_category_name
        FROM projects p
@@ -2555,6 +2566,22 @@ export const getProjectSuccess = async (req, res) => {
     }
 
     const project = projectRows[0];
+
+    // For bidding: include accepted offer amount (freelancer's bid)
+    if (project.project_type === "bidding") {
+      const { rows: offerRows } = await pool.query(
+        `SELECT o.bid_amount FROM offers o
+         WHERE o.project_id = $1 AND o.offer_status = 'accepted' LIMIT 1`,
+        [projectId]
+      );
+      project.accepted_offer_amount = offerRows[0]?.bid_amount ?? null;
+    }
+
+    // When payment is CliQ: include transfer number/alias for display
+    if (project.payment_method === "cliq") {
+      project.cliq_number = process.env.CLIQ_NUMBER || null;
+      project.cliq_alias = process.env.CLIQ_ALIAS || null;
+    }
 
     // Check access: owner or admin
     const isAdmin = Number(userRole) === 1;

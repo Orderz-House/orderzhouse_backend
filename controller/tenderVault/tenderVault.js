@@ -26,9 +26,13 @@ export const getTenderVaultProjects = async (req, res) => {
         tv.status,
         tv.created_at,
         tv.updated_at,
-        c.name AS category_name
+        c.name AS category_name,
+        sc.name AS sub_category_name,
+        ssc.name AS sub_sub_category_name
       FROM tender_vault_projects tv
       LEFT JOIN categories c ON c.id = tv.category_id
+      LEFT JOIN sub_categories sc ON sc.id = (tv.metadata->>'sub_category_id')::int
+      LEFT JOIN sub_sub_categories ssc ON ssc.id = (tv.metadata->>'sub_sub_category_id')::int
       WHERE tv.created_by = $1 AND tv.is_deleted = false
     `;
     const params = [userId];

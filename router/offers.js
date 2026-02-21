@@ -11,6 +11,9 @@ import {
   cancelOffer,
   getAcceptedOffers,
   checkMyPendingOffer,
+  getPendingBiddingApprovals,
+  adminApproveBiddingOffer,
+  adminRejectBiddingOffer,
 } from "../controller/offers.js";
 
 const offersRouter = express.Router();
@@ -83,5 +86,23 @@ offersRouter.get(
   checkMyPendingOffer
 );
 
+// Admin endpoints for bidding approvals
+offersRouter.get(
+  "/admin/pending-bidding-approvals",
+  authentication,
+  getPendingBiddingApprovals
+);
+
+offersRouter.post(
+  "/admin/projects/:projectId/approve-bidding-offer",
+  authentication,
+  adminApproveBiddingOffer
+);
+
+offersRouter.post(
+  "/admin/projects/:projectId/reject-bidding-offer",
+  authentication,
+  adminRejectBiddingOffer
+);
 
 export default offersRouter;

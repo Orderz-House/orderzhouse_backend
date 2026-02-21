@@ -370,13 +370,103 @@ export const approveOrRejectOffer = async (req, res) => {
       return res.status(403).json({ success: false, message: "Not authorized" });
 
     if (action === "accept" && String(offer.project_type) === "bidding") {
-      client.release();
+      // Bidding: no Stripe; client accepts → project goes to admin approval, client sees payment panel (CliQ/Cash)
+      await client.query("BEGIN");
+
+      const { rows: acceptedCheck } = await client.query(
+        `SELECT id FROM offers WHERE project_id = $1 AND offer_status = 'accepted'`,
+        [offer.project_id]
+      );
+
+      if (acceptedCheck.length > 0) {
+        await client.query("ROLLBACK");
+        client.release();
+        return res.status(400).json({
+          success: false,
+          message: "Only one offer can be accepted per project",
+        });
+      }
+
+      await client.query(
+        `UPDATE offers SET offer_status = 'accepted' WHERE id = $1`,
+        [offerId]
+      );
+
+      await client.query(
+        `UPDATE offers SET offer_status = 'rejected'
+         WHERE project_id = $1 AND id <> $2 AND offer_status = 'pending'`,
+        [offer.project_id, offerId]
+      );
+
+      // Set project to pending_admin_approval (only status + updated_at to avoid schema issues)
+      await client.query(
+        `UPDATE projects SET status = 'pending_admin_approval', updated_at = NOW() WHERE id = $1`,
+        [offer.project_id]
+      );
+        
+        // Create assignment with pending status (not active yet)
+        let assignmentId = null;
+        try {
+          const { rows: insertRows } = await client.query(
+            `INSERT INTO project_assignments (project_id, freelancer_id, status, assigned_at)
+             VALUES ($1, $2, 'pending_admin_approval', NOW())
+             RETURNING id`,
+            [offer.project_id, offer.freelancer_id]
+          );
+          assignmentId = insertRows[0]?.id || null;
+        } catch (assignErr) {
+          if (assignErr.code === "23505") {
+            const { rows: updateRows } = await client.query(
+              `UPDATE project_assignments 
+               SET status = 'pending_admin_approval', assigned_at = NOW()
+               WHERE project_id = $1 AND freelancer_id = $2
+               RETURNING id`,
+              [offer.project_id, offer.freelancer_id]
+            );
+            assignmentId = updateRows[0]?.id || null;
+          } else throw assignErr;
+        }
+        
+        // Emit events
+        try {
+          eventBus.emit("offer.statusChanged", {
+            offerId: offer.id,
+            projectId: offer.project_id,
+            projectTitle: offer.project_title,
+            freelancerId: offer.freelancer_id,
+            accepted: true,
+            pendingAdminApproval: true,
+          });
+          
+          const { rows: otherPendingOffers } = await client.query(
+            `SELECT id, freelancer_id FROM offers
+             WHERE project_id = $1 AND id <> $2 AND offer_status = 'pending'`,
+            [offer.project_id, offerId]
+          );
+          
+          for (const o of otherPendingOffers || []) {
+            eventBus.emit("offer.statusChanged", {
+              offerId: o.id,
+              projectId: offer.project_id,
+              projectTitle: offer.project_title,
+              freelancerId: o.freelancer_id,
+              accepted: false,
+              autoRejected: true,
+            });
+          }
+        } catch (e) {
+          console.error("eventBus error (approveOrRejectOffer):", e);
+        }
+        
+        await client.query("COMMIT");
+        client.release();
+        
       return res.json({
         success: true,
-        requiresPayment: true,
-        offerId: Number(offerId),
-        amount: Number(offer.bid_amount),
-        message: "Pay the full offer amount to accept and assign the freelancer",
+        pendingAdminApproval: true,
+        showPaymentPanel: true,
+        projectId: offer.project_id,
+        message: "Offer accepted. Choose payment method (CliQ/Cash). Project is pending admin approval.",
       });
     }
 
@@ -846,6 +936,323 @@ export const getAcceptedOffers = async (req, res) => {
   } catch (err) {
     console.error("getAcceptedOffers error:", err);
     res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+/**
+ * -------------------------------
+ * GET PENDING BIDDING APPROVALS (ADMIN)
+ * -------------------------------
+ * Returns all bidding projects with accepted offers waiting for admin approval.
+ * Uses minimal columns to avoid schema mismatches (no project_assignments, no is_deleted if missing).
+ */
+export const getPendingBiddingApprovals = async (req, res) => {
+  try {
+    const userId = req.token?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Check if user is admin (users.role_id, users.is_deleted used elsewhere in app)
+    const adminCheck = await pool.query(
+      `SELECT role_id FROM users WHERE id = $1`,
+      [userId]
+    );
+    if (!adminCheck.rows.length || Number(adminCheck.rows[0].role_id) !== 1) {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    // Query avoids offers.created_at (column may not exist in some DBs); uses only offers.id, bid_amount, offer_status
+    const { rows } = await pool.query(
+      `SELECT 
+        p.id AS project_id,
+        p.title AS project_title,
+        p.status,
+        p.created_at AS project_created_at,
+        u.id AS client_id,
+        TRIM(u.first_name || ' ' || COALESCE(u.last_name, '')) AS client_name,
+        u.email AS client_email,
+        o.id AS offer_id,
+        o.bid_amount,
+        p.created_at AS offer_created_at,
+        p.created_at AS accepted_at,
+        f.id AS freelancer_id,
+        TRIM(f.first_name || ' ' || COALESCE(f.last_name, '')) AS freelancer_name,
+        f.email AS freelancer_email
+       FROM projects p
+       JOIN users u ON u.id = p.user_id
+       JOIN offers o ON o.project_id = p.id AND o.offer_status = 'accepted'
+       JOIN users f ON f.id = o.freelancer_id
+       WHERE p.project_type = 'bidding'
+         AND p.status = 'pending_admin_approval'
+       ORDER BY p.created_at DESC`
+    );
+
+    return res.json({
+      success: true,
+      approvals: rows,
+    });
+  } catch (err) {
+    console.error("getPendingBiddingApprovals error:", err);
+    const msg = err.message || String(err);
+    const code = err.code;
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: msg,
+      ...(code && { code }),
+    });
+  }
+};
+
+/**
+ * -------------------------------
+ * ADMIN APPROVE BIDDING OFFER (ADMIN)
+ * -------------------------------
+ * Approves a pending bidding project offer, activates the project
+ */
+export const adminApproveBiddingOffer = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const adminId = req.token?.userId;
+    if (!adminId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Check if user is admin
+    const { rows: userRows } = await client.query(
+      `SELECT role_id FROM users WHERE id = $1 AND is_deleted = false`,
+      [adminId]
+    );
+    if (!userRows.length || Number(userRows[0].role_id) !== 1) {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    const { projectId } = req.params;
+
+    await client.query("BEGIN");
+
+    // Get project and accepted offer (client = project owner from p.user_id)
+    const { rows: projectRows } = await client.query(
+      `SELECT p.*, p.user_id AS client_id, o.id AS offer_id, o.freelancer_id, o.bid_amount
+       FROM projects p
+       JOIN offers o ON o.project_id = p.id AND o.offer_status = 'accepted'
+       WHERE p.id = $1 
+         AND p.project_type = 'bidding'
+         AND p.status = 'pending_admin_approval'
+         AND p.is_deleted = false`,
+      [projectId]
+    );
+
+    if (!projectRows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        success: false,
+        message: "Project not found or not in pending approval status",
+      });
+    }
+
+    const project = projectRows[0];
+    const offerId = project.offer_id;
+    const freelancerId = project.freelancer_id;
+
+    // Update project status to in_progress
+    await client.query(
+      `UPDATE projects 
+       SET status = 'in_progress', 
+           completion_status = 'in_progress',
+           updated_at = NOW()
+       WHERE id = $1`,
+      [projectId]
+    );
+
+    // Update assignment status to active
+    await client.query(
+      `UPDATE project_assignments 
+       SET status = 'active', assigned_at = NOW()
+       WHERE project_id = $1 AND freelancer_id = $2`,
+      [projectId, freelancerId]
+    );
+
+    // Create escrow (no payment for bidding projects that skipped payment)
+    const { createEscrowHeld } = await import("../services/escrowService.js");
+    await createEscrowHeld({
+      projectId,
+      clientId: project.client_id,
+      freelancerId,
+      amount: project.bid_amount,
+      paymentId: null, // No payment for skipped payment bidding projects
+    }, client);
+
+    // Activate subscription if pending_start
+    const { activateSubscriptionOnFirstAcceptance } = await import("../services/subscriptionActivation.js");
+    const { rows: assignmentRows } = await client.query(
+      `SELECT id FROM project_assignments 
+       WHERE project_id = $1 AND freelancer_id = $2`,
+      [projectId, freelancerId]
+    );
+    const assignmentId = assignmentRows[0]?.id || null;
+    
+    if (assignmentId) {
+      await activateSubscriptionOnFirstAcceptance(freelancerId, client, assignmentId);
+    }
+
+    // Emit events
+    try {
+      eventBus.emit("offer.statusChanged", {
+        offerId,
+        projectId,
+        projectTitle: project.title,
+        freelancerId,
+        accepted: true,
+        adminApproved: true,
+      });
+      eventBus.emit("freelancer.assignmentChanged", {
+        projectId,
+        projectTitle: project.title,
+        freelancerId,
+        assigned: true,
+      });
+      eventBus.emit("escrow.funded", {
+        projectId,
+        projectTitle: project.title,
+        freelancerId,
+        amount: project.bid_amount,
+      });
+    } catch (e) {
+      console.error("eventBus error (adminApproveBiddingOffer):", e);
+    }
+
+    await client.query("COMMIT");
+    client.release();
+
+    return res.json({
+      success: true,
+      message: "Bidding project approved. Project is now active and freelancer can start working.",
+    });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+    if (client) client.release();
+    console.error("adminApproveBiddingOffer error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error?.message || "Server error",
+    });
+  }
+};
+
+/**
+ * -------------------------------
+ * ADMIN REJECT BIDDING OFFER (ADMIN)
+ * -------------------------------
+ * Rejects a pending bidding project offer, reverts project to bidding status
+ */
+export const adminRejectBiddingOffer = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const adminId = req.token?.userId;
+    if (!adminId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Check if user is admin
+    const { rows: userRows } = await client.query(
+      `SELECT role_id FROM users WHERE id = $1 AND is_deleted = false`,
+      [adminId]
+    );
+    if (!userRows.length || Number(userRows[0].role_id) !== 1) {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    const { projectId } = req.params;
+    const { reason } = req.body || {};
+
+    await client.query("BEGIN");
+
+    // Get project and accepted offer
+    const { rows: projectRows } = await client.query(
+      `SELECT p.*, o.id AS offer_id, o.freelancer_id
+       FROM projects p
+       JOIN offers o ON o.project_id = p.id AND o.offer_status = 'accepted'
+       WHERE p.id = $1 
+         AND p.project_type = 'bidding'
+         AND p.status = 'pending_admin_approval'
+         AND p.is_deleted = false`,
+      [projectId]
+    );
+
+    if (!projectRows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        success: false,
+        message: "Project not found or not in pending approval status",
+      });
+    }
+
+    const project = projectRows[0];
+    const offerId = project.offer_id;
+    const freelancerId = project.freelancer_id;
+
+    // Revert offer to pending (or rejected)
+    await client.query(
+      `UPDATE offers SET offer_status = 'rejected' WHERE id = $1`,
+      [offerId]
+    );
+
+    // Revert project status to bidding and clear payment method so client can choose again on next accept
+    // admin_approval_status is NOT NULL in DB, use 'none' not NULL
+    await client.query(
+      `UPDATE projects 
+       SET status = 'bidding', 
+           payment_method = NULL,
+           admin_approval_status = 'none',
+           updated_at = NOW()
+       WHERE id = $1`,
+      [projectId]
+    );
+    try {
+      await client.query(
+        `UPDATE projects SET completion_status = NULL WHERE id = $1`,
+        [projectId]
+      );
+    } catch (_) {}
+
+    // Remove assignment
+    await client.query(
+      `DELETE FROM project_assignments 
+       WHERE project_id = $1 AND freelancer_id = $2`,
+      [projectId, freelancerId]
+    );
+
+    // Emit events
+    try {
+      eventBus.emit("offer.statusChanged", {
+        offerId,
+        projectId,
+        projectTitle: project.title,
+        freelancerId,
+        accepted: false,
+        adminRejected: true,
+        reason,
+      });
+    } catch (e) {
+      console.error("eventBus error (adminRejectBiddingOffer):", e);
+    }
+
+    await client.query("COMMIT");
+    client.release();
+
+    return res.json({
+      success: true,
+      message: "Bidding project offer rejected. Project reverted to bidding status.",
+    });
+  } catch (error) {
+    try { await client.query("ROLLBACK"); } catch (_) {}
+    if (client) client.release();
+    console.error("adminRejectBiddingOffer error:", error);
+    return res.status(500).json({ success: false, message: error?.message || "Server error" });
   }
 };
 

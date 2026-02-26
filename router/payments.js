@@ -14,6 +14,7 @@ import {
   createEscrow,
   releaseEscrow,
   refundEscrow,
+  releaseHeldEscrowForCompletedProjects,
 
   // UNIFIED
   getPaymentHistory,
@@ -112,6 +113,14 @@ PaymentsRouter.post(
   authentication,
   adminOnly,
   refundEscrow
+);
+
+// One-time backfill: release held escrow for projects already marked completed
+PaymentsRouter.post(
+  "/admin/release-held-escrow",
+  authentication,
+  adminOnly,
+  releaseHeldEscrowForCompletedProjects
 );
 
 export default PaymentsRouter;

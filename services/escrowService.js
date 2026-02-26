@@ -14,23 +14,27 @@ export const ensureWallet = async (userId, client = null) => {
 
 /**
  * Create escrow with status 'held'
- * Idempotent: if escrow exists for (project_id, payment_id), do nothing
+ * Idempotent: if escrow exists for (project_id, payment_id), do nothing.
+ * لا نستخدم ON CONFLICT لأن القيد الفريد قد لا يكون موجوداً في كل قواعد البيانات.
  */
 export const createEscrowHeld = async ({ projectId, clientId, freelancerId, amount, paymentId }, client = null) => {
   const queryClient = client || pool;
-  
+
   if (paymentId) {
-    // For projects with payment_id (fixed/hourly paid projects)
-    await queryClient.query(
-      `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status, payment_id)
-       VALUES ($1, $2, $3, $4, 'held', $5)
-       ON CONFLICT (project_id, payment_id) DO NOTHING`,
-      [projectId, clientId, freelancerId, amount, paymentId]
+    // For projects with payment_id (fixed/hourly paid projects): تحقق ثم إدراج
+    const exists = await queryClient.query(
+      `SELECT id FROM escrow WHERE project_id = $1 AND payment_id = $2 LIMIT 1`,
+      [projectId, paymentId]
     );
+    if (exists.rows.length === 0) {
+      await queryClient.query(
+        `INSERT INTO escrow (project_id, client_id, freelancer_id, amount, status, payment_id)
+         VALUES ($1, $2, $3, $4, 'held', $5)`,
+        [projectId, clientId, freelancerId, amount, paymentId]
+      );
+    }
   } else {
-    // For bidding projects without payment_id.
-    // Avoid ON CONFLICT (project_id) WHERE payment_id IS NULL so we don't depend on
-    // the partial unique index existing (migration may not have been run).
+    // For bidding projects without payment_id
     const exists = await queryClient.query(
       `SELECT id FROM escrow WHERE project_id = $1 AND payment_id IS NULL LIMIT 1`,
       [projectId]
@@ -68,16 +72,36 @@ export const releaseEscrowToFreelancer = async (projectId, client = null) => {
     );
 
     if (escrowResult.rows.length === 0) {
+      // قد يكون الـ escrow مُحرّراً مسبقاً (موافقة بعد طلب تعديل) — لا نضيف المبلغ مرة ثانية
+      const releasedCheck = await queryClient.query(
+        `SELECT id, freelancer_id, amount FROM escrow WHERE project_id = $1 AND status = 'released' LIMIT 1`,
+        [projectId]
+      );
+      if (releasedCheck.rows.length > 0) {
+        if (shouldCommit) await queryClient.query("ROLLBACK");
+        return {
+          released: true,
+          alreadyReleased: true,
+          freelancerId: releasedCheck.rows[0].freelancer_id,
+          amount: releasedCheck.rows[0].amount,
+        };
+      }
       if (shouldCommit) await queryClient.query("ROLLBACK");
+      console.warn(`[releaseEscrowToFreelancer] No held escrow for project ${projectId}. Freelancer will not be credited. Check that escrow was created when the project was assigned.`);
       return { released: false, reason: "No held escrow found" };
     }
 
     const escrow = escrowResult.rows[0];
 
-    // Idempotency check: already released
+    // Idempotency: لا نحرّر مرتين
     if (escrow.status === 'released') {
       if (shouldCommit) await queryClient.query("ROLLBACK");
-      return { released: false, reason: "Escrow already released" };
+      return {
+        released: true,
+        alreadyReleased: true,
+        freelancerId: escrow.freelancer_id,
+        amount: escrow.amount,
+      };
     }
 
     // Update escrow status
@@ -91,15 +115,13 @@ export const releaseEscrowToFreelancer = async (projectId, client = null) => {
     // Ensure wallet exists
     await ensureWallet(escrow.freelancer_id, queryClient);
 
-    // Credit freelancer wallet
+    // Credit freelancer wallet (no updated_at to support DBs without that column)
     await queryClient.query(
-      `UPDATE wallets 
-       SET balance = balance + $1, updated_at = NOW()
-       WHERE user_id = $2`,
+      `UPDATE wallets SET balance = balance + $1 WHERE user_id = $2`,
       [escrow.amount, escrow.freelancer_id]
     );
 
-    // Record transaction
+    // Record transaction (type must match DB CHECK: 'credit' or 'debit')
     await queryClient.query(
       `INSERT INTO wallet_transactions (user_id, amount, type, note)
        VALUES ($1, $2, 'credit', $3)`,

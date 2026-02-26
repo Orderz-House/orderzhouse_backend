@@ -159,20 +159,6 @@ const passwordResetLimiter = rateLimit({
 app.use("/users/forgot-password", passwordResetLimiter);
 app.use("/users/reset-password", passwordResetLimiter);
 
-// ============================================================
-// 🧪 TEMP TEST ROUTES - Direct in index.js (MUST BE FIRST!)
-// ============================================================
-
-app.get("/payments/history", (req, res) => {
-  console.log("✅ TEMP /payments/history route HIT!");
-  res.json({
-    success: true,
-    message: "TEMP payments/history working!",
-    data: { items: [], page: 1, limit: 50, type: "all" },
-  });
-});
-// ============================================================
-
 // Routers
 //APPOINTMENTS
 app.use("/assignments", assignmentsRouter);
